@@ -27,7 +27,7 @@ def ensure_pillow_avif():
 HAS_AVIF = ensure_pillow_avif()
 
 # ------------------- НАСТРОЙКИ -------------------
-NUM_PAGES = 800
+NUM_PAGES = 50
 WORDS_PER_PAGE = 200         # количество текстовых элементов на страницу
 FONTS = ["Times New Roman", "Arial", "Courier New", "Verdana"]
 SIZES = [10, 11, 12, 14]
