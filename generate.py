@@ -1,30 +1,12 @@
 import json
 import os
 import random
-import sys
-import subprocess
 import shutil
-import gzip
 from pathlib import Path
 
-# ------------------- АВТОУСТАНОВКА ЗАВИСИМОСТЕЙ -------------------
-def install(package):
-    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-
-def ensure_pillow_avif():
-    try:
-        from PIL import Image
-        try:
-            import pillow_avif
-        except ImportError:
-            print("Устанавливаю pillow-avif-plugin...")
-            install("pillow-avif-plugin")
-        return True
-    except Exception:
-        print("⚠️  Pillow не установлен. Изображения будут пустыми заглушками.")
-        return False
-
-HAS_AVIF = ensure_pillow_avif()
+import brotli
+import pillow_avif  # noqa: F401 — регистрирует поддержку AVIF в Pillow
+from PIL import Image, ImageDraw
 
 # ------------------- НАСТРОЙКИ -------------------
 NUM_PAGES = 50
@@ -118,8 +100,8 @@ for page_idx in range(NUM_PAGES):
         "elements": elements
     })
 
-# ------------------- СОХРАНЕНИЕ ФАЙЛОВ -------------------
-# Очищаем старые данные
+# ------------------- СОХРАНЕНИЕ BROTLI-ФАЙЛОВ -------------------
+# Очищаем старые данные, чтобы несжатые JSON и gzip не оставались на диске.
 if DATA_DIR.exists():
     shutil.rmtree(DATA_DIR)
 if LOCALES_DIR.exists():
@@ -129,41 +111,28 @@ DATA_DIR.mkdir(exist_ok=True)
 IMAGES_DIR.mkdir(exist_ok=True)
 LOCALES_DIR.mkdir(exist_ok=True)
 
-pages_json_path = DATA_DIR / "pages.json"
-with open(pages_json_path, "w", encoding="utf-8") as f:
-    json.dump(pages, f, ensure_ascii=False)
+def write_brotli_json(data, destination):
+    payload = json.dumps(
+        data, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    destination.write_bytes(brotli.compress(payload, quality=11))
 
-ru_json_path = LOCALES_DIR / "ru.json"
-en_json_path = LOCALES_DIR / "en.json"
-with open(ru_json_path, "w", encoding="utf-8") as f:
-    json.dump(ru_translations, f, ensure_ascii=False)
-with open(en_json_path, "w", encoding="utf-8") as f:
-    json.dump(en_translations, f, ensure_ascii=False)
+pages_br_path = DATA_DIR / "pages.json.br"
+ru_br_path = LOCALES_DIR / "ru.json.br"
+en_br_path = LOCALES_DIR / "en.json.br"
+
+print("Сжатие Brotli (quality 11)...")
+write_brotli_json(pages, pages_br_path)
+write_brotli_json(ru_translations, ru_br_path)
+write_brotli_json(en_translations, en_br_path)
 
 # ------------------- ГЕНЕРАЦИЯ AVIF-ИЗОБРАЖЕНИЙ -------------------
-if HAS_AVIF:
-    from PIL import Image, ImageDraw
-    print("Создание AVIF-изображений...")
-    for page_idx in range(NUM_PAGES):
-        img = Image.new('RGB', (200, 150), color=(220, 220, 240))
-        draw = ImageDraw.Draw(img)
-        draw.text((10, 10), f"Img {page_idx+1}", fill=(0, 0, 100))
-        img.save(IMAGES_DIR / f"page{page_idx+1}_img1.avif", "AVIF", quality=QUALITY_AVIF)
-else:
-    print("Создание пустых заглушек вместо AVIF...")
-    for page_idx in range(NUM_PAGES):
-        (IMAGES_DIR / f"page{page_idx+1}_img1.avif").touch()
-
-# ------------------- СЖАТИЕ GZIP -------------------
-def gzip_compress_file(src, dst):
-    with open(src, "rb") as f_in:
-        with gzip.open(dst, "wb", compresslevel=9) as f_out:
-            f_out.writelines(f_in)
-
-print("Сжатие gzip...")
-gzip_compress_file(pages_json_path, pages_json_path.with_suffix(".json.gz"))
-gzip_compress_file(ru_json_path, ru_json_path.with_suffix(".json.gz"))
-gzip_compress_file(en_json_path, en_json_path.with_suffix(".json.gz"))
+print("Создание AVIF-изображений...")
+for page_idx in range(NUM_PAGES):
+    img = Image.new("RGB", (200, 150), color=(220, 220, 240))
+    draw = ImageDraw.Draw(img)
+    draw.text((10, 10), f"Img {page_idx+1}", fill=(0, 0, 100))
+    img.save(IMAGES_DIR / f"page{page_idx+1}_img1.avif", "AVIF", quality=QUALITY_AVIF)
 
 # ------------------- ОТЧЁТ -------------------
 def file_size(path):
@@ -175,18 +144,14 @@ print("-" * 60)
 print(f"Страниц:            {NUM_PAGES}")
 print(f"Слов на странице:   {WORDS_PER_PAGE}")
 print()
-print("Размеры файлов:")
-print(f"  pages.json        : {file_size(pages_json_path):>10,} байт")
-print(f"  pages.json.gz     : {file_size(pages_json_path.with_suffix('.json.gz')):>10,} байт")
-print(f"  ru.json           : {file_size(ru_json_path):>10,} байт")
-print(f"  ru.json.gz        : {file_size(ru_json_path.with_suffix('.json.gz')):>10,} байт")
-print(f"  en.json           : {file_size(en_json_path):>10,} байт")
-print(f"  en.json.gz        : {file_size(en_json_path.with_suffix('.json.gz')):>10,} байт")
+print("Размеры Brotli-файлов:")
+print(f"  pages.json.br     : {file_size(pages_br_path):>10,} байт")
+print(f"  ru.json.br        : {file_size(ru_br_path):>10,} байт")
+print(f"  en.json.br        : {file_size(en_br_path):>10,} байт")
 total_img = sum(file_size(IMAGES_DIR / f"page{i+1}_img1.avif") for i in range(NUM_PAGES))
 print(f"  images (все AVIF) : {total_img:>10,} байт")
 print()
-total = (file_size(pages_json_path.with_suffix('.json.gz')) +
-         file_size(ru_json_path.with_suffix('.json.gz')) + total_img)
-print(f"  Итого (pages.gz + ru.gz + img): {total:>10,} байт (~{total/1024:.1f} КБ)")
+total = file_size(pages_br_path) + file_size(ru_br_path) + total_img
+print(f"  Итого (pages.br + ru.br + img): {total:>10,} байт (~{total/1024:.1f} КБ)")
 print("=" * 60)
-print("\nЗапустите сервер: python -m http.server 8000")
+print("\nЗапустите сервер: python server.py")

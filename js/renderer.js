@@ -14,34 +14,26 @@ const btnGo = document.getElementById('btnGo');
 const btnLangRu = document.getElementById('btnLangRu');
 const btnLangEn = document.getElementById('btnLangEn');
 
-// --- Распаковка gzip ---
-async function decompressGzip(buffer) {
-  const ds = new DecompressionStream('gzip');
-  const blob = new Blob([buffer]);
-  const stream = blob.stream().pipeThrough(ds);
-  const response = new Response(stream);
-  return await response.arrayBuffer();
+// --- Загрузка Brotli-данных ---
+async function loadBrotliJson(path) {
+  const response = await fetch(path);
+  if (!response.ok) {
+    throw new Error(`Не удалось загрузить ${path} (HTTP ${response.status})`);
+  }
+  if (response.headers.get('content-encoding') !== 'br') {
+    throw new Error(`${path} отдан без Content-Encoding: br. Запустите: python server.py`);
+  }
+  return response.json();
 }
 
-// --- Загрузка данных ---
 async function loadData(lang) {
   try {
-    // Загружаем pages.json.gz один раз
     if (!pages.length) {
-      const pagesResp = await fetch('data/pages.json.gz');
-      if (!pagesResp.ok) throw new Error('Не удалось загрузить pages.json.gz');
-      const pagesBuf = await pagesResp.arrayBuffer();
-      const decompressed = await decompressGzip(pagesBuf);
-      pages = JSON.parse(new TextDecoder().decode(decompressed));
+      pages = await loadBrotliJson('data/pages.json.br');
     }
 
-    // Загружаем переводы для языка, если ещё не загружены
     if (!translations[lang]) {
-      const transResp = await fetch(`locales/${lang}.json.gz`);
-      if (!transResp.ok) throw new Error(`Не удалось загрузить ${lang}.json.gz`);
-      const transBuf = await transResp.arrayBuffer();
-      const decompressed = await decompressGzip(transBuf);
-      translations[lang] = JSON.parse(new TextDecoder().decode(decompressed));
+      translations[lang] = await loadBrotliJson(`locales/${lang}.json.br`);
     }
 
     currentLang = lang;
@@ -112,6 +104,7 @@ function renderPage(pageNum) {
 function updateControls(pageNum) {
   pageIndicator.textContent = `Страница ${pageNum} из ${pages.length}`;
   pageInput.value = pageNum;
+  pageInput.max = pages.length;
   btnPrev.disabled = pageNum <= 1;
   btnNext.disabled = pageNum >= pages.length;
 }
@@ -140,6 +133,8 @@ btnLangRu.addEventListener('click', () => loadData('ru'));
 btnLangEn.addEventListener('click', () => loadData('en'));
 
 // --- Старт ---
-(async () => {
-  await loadData('ru');
-})();
+if (window.location.protocol === 'file:') {
+  alert('Открытие через file:// не поддерживается. Запустите: python server.py');
+} else {
+  loadData('ru');
+}
