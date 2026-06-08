@@ -1,5 +1,11 @@
 // Глобальные данные
 let pages = [];
+let fonts = [];
+let colors = [];
+let sources = [];
+let svgs = [];
+let styles = [];
+let pageSizes = [];
 let translations = {};
 let currentLang = 'ru';
 let currentPage = 1;
@@ -29,7 +35,18 @@ async function loadBrotliJson(path) {
 async function loadData(lang) {
   try {
     if (!pages.length) {
-      pages = await loadBrotliJson('data/pages.json.br');
+      const documentData = await loadBrotliJson('data/pages.json.br');
+      const [version, loadedFonts, loadedColors, loadedSources, loadedSvgs, loadedStyles, loadedPageSizes, loadedPages] = documentData;
+      if (version !== 1) {
+        throw new Error(`Неподдерживаемая версия pages.json.br: ${version}`);
+      }
+      fonts = loadedFonts;
+      colors = loadedColors;
+      sources = loadedSources;
+      svgs = loadedSvgs;
+      styles = loadedStyles;
+      pageSizes = loadedPageSizes;
+      pages = loadedPages;
     }
 
     if (!translations[lang]) {
@@ -51,47 +68,54 @@ function renderPage(pageNum) {
   const pageData = pages[pageNum - 1];
   if (!pageData) return;
 
+  const [pageSizeIdx, elements] = pageData;
+  const [pageWidth, pageHeight] = pageSizes[pageSizeIdx];
   const transData = translations[currentLang][pageNum - 1];
-  
+
   container.innerHTML = '';
   const pageDiv = document.createElement('div');
   pageDiv.className = 'page';
-  pageDiv.style.width = pageData.width + 'px';
-  pageDiv.style.height = pageData.height + 'px';
+  pageDiv.style.width = pageWidth + 'px';
+  pageDiv.style.height = pageHeight + 'px';
 
-  pageData.elements.forEach(el => {
-    if (el.type === 'text') {
+  elements.forEach(el => {
+    const type = el[0];
+    if (type === 0) {
+      const [, textIdx, styleIdx, x, y, w, h] = el;
+      const [fontIdx, size, flags, colorIdx] = styles[styleIdx];
       const span = document.createElement('span');
       span.className = 'text-element';
-      span.style.left = el.x + 'px';
-      span.style.top = el.y + 'px';
-      span.style.fontFamily = el.font;
-      span.style.fontSize = el.size + 'px';
-      span.style.fontWeight = el.bold ? 'bold' : 'normal';
-      span.style.fontStyle = el.italic ? 'italic' : 'normal';
-      span.style.color = el.color || '#000';
-      span.style.width = el.w + 'px';
-      span.style.height = el.h + 'px';
-      span.textContent = transData[el.textIdx] || '';
+      span.style.left = x + 'px';
+      span.style.top = y + 'px';
+      span.style.fontFamily = fonts[fontIdx];
+      span.style.fontSize = size + 'px';
+      span.style.fontWeight = flags & 1 ? 'bold' : 'normal';
+      span.style.fontStyle = flags & 2 ? 'italic' : 'normal';
+      span.style.color = colors[colorIdx] || '#000';
+      span.style.width = w + 'px';
+      span.style.height = h + 'px';
+      span.textContent = transData[textIdx] || '';
       pageDiv.appendChild(span);
-    } else if (el.type === 'image') {
+    } else if (type === 1) {
+      const [, srcIdx, x, y, w, h] = el;
       const img = document.createElement('img');
-      img.src = 'data/' + el.src;  // путь относительно корня, к data/images/...
+      img.src = 'data/' + sources[srcIdx];  // путь относительно корня, к data/images/...
       img.style.position = 'absolute';
-      img.style.left = el.x + 'px';
-      img.style.top = el.y + 'px';
-      img.style.width = el.w + 'px';
-      img.style.height = el.h + 'px';
+      img.style.left = x + 'px';
+      img.style.top = y + 'px';
+      img.style.width = w + 'px';
+      img.style.height = h + 'px';
       pageDiv.appendChild(img);
-    } else if (el.type === 'svg') {
+    } else if (type === 2) {
+      const [, svgIdx, x, y, w, h] = el;
       const svgWrapper = document.createElement('div');
-      svgWrapper.innerHTML = el.svg;
+      svgWrapper.innerHTML = svgs[svgIdx];
       const svg = svgWrapper.firstChild;
       svg.style.position = 'absolute';
-      svg.style.left = el.x + 'px';
-      svg.style.top = el.y + 'px';
-      svg.style.width = el.w + 'px';
-      svg.style.height = el.h + 'px';
+      svg.style.left = x + 'px';
+      svg.style.top = y + 'px';
+      svg.style.width = w + 'px';
+      svg.style.height = h + 'px';
       pageDiv.appendChild(svg);
     }
   });
