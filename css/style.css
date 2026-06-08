@@ -29,8 +29,9 @@ body {
   overflow: hidden;
 }
 .text-element {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   position: absolute;
+  box-sizing: border-box;
+  white-space: normal;
+  overflow: hidden;
+  line-height: 1.55;
 }

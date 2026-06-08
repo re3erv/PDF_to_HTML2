@@ -9,7 +9,7 @@ class BrotliStaticHandler(SimpleHTTPRequestHandler):
 
     def guess_type(self, path):
         if path.endswith(".json.br"):
-            return "application/json"
+            return "application/json; charset=utf-8"
         return super().guess_type(path)
 
     def end_headers(self):
