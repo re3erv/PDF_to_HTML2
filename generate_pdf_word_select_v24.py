@@ -1,9 +1,10 @@
 """
-V24: original AVIF page images + selectable word boxes only.
+V24: original AVIF page images + selectable word boxes + structural overlays.
 
 Based on v16, but:
   - removed char boxes and image_to_boxes
-  - only image_to_data word boxes remain
+  - image_to_data word boxes retain OCR structural identifiers
+  - OpenCV detects lines, whitespace regions, text blocks, and list markers
   - word boxes contain actual text for browser selection/copy
   - OCR still runs on preprocessed image
   - saved AVIF is original unfiltered PDF render
@@ -62,6 +63,7 @@ MIN_COL_PIXELS = int(os.getenv("MIN_COL_PIXELS", "2"))
 REFINE_WORDS = os.getenv("REFINE_WORDS", "1") != "0"
 
 MAX_PAGES = int(os.getenv("MAX_PAGES", "0"))
+MAX_STRUCTURAL_REGIONS = int(os.getenv("MAX_STRUCTURAL_REGIONS", "10"))
 ZSTD_LEVEL = int(os.getenv("ZSTD_LEVEL", "19"))
 
 DATA_DIR = Path("data")
@@ -262,6 +264,160 @@ def refine_box_by_mask(mask_fg: Any, x: int, y: int, w: int, h: int, pad: int = 
     return int(new_x0), int(new_y0), int(new_w), int(new_h)
 
 
+def _boxes_from_mask(mask: Any, min_w: int, min_h: int) -> list[list[int]]:
+    contours, _hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    boxes = []
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        if w >= min_w and h >= min_h:
+            boxes.append([int(x), int(y), int(w), int(h)])
+    return boxes
+
+
+def detect_linear_objects(mask_fg: Any) -> list[list[int]]:
+    """Detect long horizontal and vertical objects without changing the OCR mask."""
+    height, width = mask_fg.shape[:2]
+    lines: list[list[int]] = []
+    for kernel, min_w, min_h in (
+        (cv2.getStructuringElement(cv2.MORPH_RECT, (max(20, width // 30), 1)), max(20, width // 25), 1),
+        (cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(20, height // 30))), 1, max(20, height // 25)),
+    ):
+        opened = cv2.morphologyEx(mask_fg, cv2.MORPH_OPEN, kernel)
+        lines.extend(_boxes_from_mask(opened, min_w, min_h))
+    return sorted({tuple(box) for box in lines}, key=lambda box: (box[1], box[0]))
+
+
+def _empty_runs(values: Any) -> list[tuple[int, int]]:
+    runs = []
+    start = None
+    for index, value in enumerate(values):
+        if value == 0 and start is None:
+            start = index
+        elif value != 0 and start is not None:
+            runs.append((start, index))
+            start = None
+    if start is not None:
+        runs.append((start, len(values)))
+    return runs
+
+
+def find_structural_regions(width: int, height: int, words: list[dict[str, Any]], lines: list[list[int]]) -> tuple[list[dict[str, Any]], float]:
+    """Recursively find whitespace cuts, then rank them independently by thickness."""
+    occupied = np.zeros((height, width), dtype=np.uint8)
+    for item in [*[ [word["x"], word["y"], word["w"], word["h"]] for word in words], *lines]:
+        x, y, w, h = item
+        occupied[max(0, y):min(height, y + h), max(0, x):min(width, x + w)] = 1
+
+    line_centers: dict[tuple[int, int, int], list[float]] = {}
+    for word in words:
+        line_centers.setdefault((word["b"], word["p"], word["l"]), []).append(word["y"] + word["h"] / 2)
+    centers = sorted(float(np.median(items)) for items in line_centers.values())
+    intervals = [b - a for a, b in zip(centers, centers[1:]) if b > a]
+    average_interval = float(np.median(intervals)) if intervals else float(np.median([word["h"] for word in words]) if words else 1)
+    minimum_power = max(2, int(round(average_interval * 1.1)))
+    candidates: list[dict[str, Any]] = []
+
+    def split(x: int, y: int, w: int, h: int, depth: int = 0) -> None:
+        if depth >= 20 or w < minimum_power * 2 or h < minimum_power * 2:
+            return
+        crop = occupied[y:y + h, x:x + w]
+        choices = []
+        for start, end in _empty_runs(crop.max(axis=1)):
+            if end - start >= minimum_power:
+                choices.append((end - start, "h", x, y + start, w, end - start))
+        for start, end in _empty_runs(crop.max(axis=0)):
+            if end - start >= minimum_power:
+                choices.append((end - start, "v", x + start, y, end - start, h))
+        if not choices:
+            return
+        power, orientation, rx, ry, rw, rh = max(choices, key=lambda item: item[0])
+        candidates.append({"x": rx, "y": ry, "w": rw, "h": rh, "power": power, "orientation": orientation})
+        if orientation == "h":
+            split(x, y, w, ry - y, depth + 1)
+            split(x, ry + rh, w, y + h - ry - rh, depth + 1)
+        else:
+            split(x, y, rx - x, h, depth + 1)
+            split(rx + rw, y, x + w - rx - rw, h, depth + 1)
+
+    split(0, 0, width, height)
+    unique = {(item["x"], item["y"], item["w"], item["h"]): item for item in candidates}
+    ranked = sorted(unique.values(), key=lambda item: (-item["power"], item["y"], item["x"]))[:MAX_STRUCTURAL_REGIONS]
+    centers = [item["x"] + item["w"] / 2 for item in ranked if item["orientation"] == "v"]
+    has_left_column_cut = any(width * 0.30 <= center <= width * 0.35 for center in centers)
+    has_right_column_cut = any(width * 0.60 <= center <= width * 0.70 for center in centers)
+    for rank, item in enumerate(ranked, 1):
+        item["rank"] = rank
+        center_x = item["x"] + item["w"] / 2
+        is_full_width = item["orientation"] == "h" and item["w"] >= width * 0.9
+        is_center_cut = item["orientation"] == "v" and width * 0.475 <= center_x <= width * 0.525
+        is_column_pair = item["orientation"] == "v" and has_left_column_cut and has_right_column_cut and (
+            width * 0.30 <= center_x <= width * 0.35 or width * 0.60 <= center_x <= width * 0.70
+        )
+        item["highlighted"] = is_full_width or is_center_cut or is_column_pair
+
+    highlighted_vertical = [item for item in ranked if item["highlighted"] and item["orientation"] == "v"]
+    for item in ranked:
+        if item["orientation"] != "h" or item["highlighted"]:
+            continue
+        x0, x1 = item["x"], item["x"] + item["w"]
+        item["highlighted"] = any(
+            (x0 <= 1 and abs(x1 - cut["x"]) <= minimum_power)
+            or (x1 >= width - 1 and abs(x0 - (cut["x"] + cut["w"])) <= minimum_power)
+            for cut in highlighted_vertical
+        )
+    return ranked, round(average_interval, 2)
+
+
+def find_text_blocks(words: list[dict[str, Any]], regions: list[dict[str, Any]], page_width: int) -> list[list[int]]:
+    vertical = sorted(item["x"] + item["w"] // 2 for item in regions if item["highlighted"] and item["orientation"] == "v")
+    horizontal = sorted(item["y"] + item["h"] // 2 for item in regions if item["highlighted"] and item["orientation"] == "h")
+    groups: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    for word in words:
+        cx, cy = word["x"] + word["w"] / 2, word["y"] + word["h"] / 2
+        key = (sum(cx > cut for cut in vertical), sum(cy > cut for cut in horizontal))
+        groups.setdefault(key, []).append(word)
+    blocks = []
+    for group in groups.values():
+        x0, y0 = min(w["x"] for w in group), min(w["y"] for w in group)
+        x1, y1 = max(w["x"] + w["w"] for w in group), max(w["y"] + w["h"] for w in group)
+        blocks.append([x0, y0, x1 - x0, y1 - y0])
+    return sorted(blocks, key=lambda box: (box[0] >= page_width / 2, box[1], box[0]))
+
+
+def find_list_markers(mask_fg: Any, words: list[dict[str, Any]]) -> list[list[int]]:
+    """Find small foreground components immediately left of OCR line starts."""
+    leftmost: dict[tuple[int, int, int], dict[str, Any]] = {}
+    for word in words:
+        key = (word["b"], word["p"], word["l"])
+        if key not in leftmost or word["x"] < leftmost[key]["x"]:
+            leftmost[key] = word
+
+    contours, _hierarchy = cv2.findContours(mask_fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    components = [cv2.boundingRect(contour) for contour in contours]
+    markers = set()
+    for word in leftmost.values():
+        line_height = max(1, word["h"])
+        for x, y, w, h in components:
+            gap = word["x"] - x - w
+            aligned = abs((y + h / 2) - (word["y"] + line_height / 2)) <= line_height
+            if 0 <= gap <= line_height * 2 and aligned and 1 <= w <= line_height * 2 and 1 <= h <= line_height * 2:
+                markers.add((int(x), int(y), int(w), int(h)))
+    return [list(box) for box in sorted(markers, key=lambda box: (box[1], box[0]))]
+
+
+def analyze_page_content(mask_fg: Any, words: list[dict[str, Any]]) -> dict[str, Any]:
+    height, width = mask_fg.shape[:2]
+    lines = detect_linear_objects(mask_fg)
+    regions, average_interval = find_structural_regions(width, height, words, lines)
+    return {
+        "averageLineInterval": average_interval,
+        "lines": lines,
+        "regions": regions,
+        "blocks": find_text_blocks(words, regions, width),
+        "markers": find_list_markers(mask_fg, words),
+    }
+
+
 def ocr_words_image_to_data(ocr_image, mask_fg):
     config = f"--psm {OCR_PSM}"
     raw = pytesseract.image_to_data(
@@ -377,18 +533,18 @@ def delta_encoding(pages_meta: list[dict[str, Any]], pages_words: list[list[dict
 
 # ------------------- main -------------------
 
-def positional_encoding(pages_meta: list[dict[str, Any]], pages_words: list[list[dict[str, Any]]], word_to_idx: dict[str, int]):
+def positional_encoding(pages_meta: list[dict[str, Any]], pages_words: list[list[dict[str, Any]]], pages_analysis: list[dict[str, Any]], word_to_idx: dict[str, int]):
     """Encode page structure and formatting as positional arrays."""
     pages = []
-    for meta, words in zip(pages_meta, pages_words, strict=True):
+    for meta, words, analysis in zip(pages_meta, pages_words, pages_analysis, strict=True):
         encoded = []
         prev_x = 0
         prev_y = 0
         for word in words:
-            encoded.append([word_to_idx[word["t"]], word["x"] - prev_x, word["y"] - prev_y, word["w"], word["h"], word["c"]])
+            encoded.append([word_to_idx[word["t"]], word["x"] - prev_x, word["y"] - prev_y, word["w"], word["h"], word["c"], word["b"], word["p"], word["l"], word["n"]])
             prev_x = word["x"]
             prev_y = word["y"]
-        pages.append([meta["w"], meta["h"], meta["img"], encoded])
+        pages.append([meta["w"], meta["h"], meta["img"], encoded, analysis])
     return [24, pages]
 
 def main() -> None:
@@ -400,7 +556,7 @@ def main() -> None:
 
     print(f"Tesseract: {pytesseract.pytesseract.tesseract_cmd}")
     print(f"PDF: {INPUT_PDF}")
-    print("V24: selectable word boxes only, single OCR pass psm=11")
+    print("V24: selectable word boxes + content analysis, single OCR pass psm=11")
     print("OCR on preprocessed image; saved AVIF uses original page render")
     print(f"OCR_DPI={OCR_DPI}, QUALITY_AVIF={QUALITY_AVIF}, OCR_LANG={OCR_LANG}, psm={OCR_PSM}")
     print(f"Preprocess: contrast={PREPROCESS_CONTRAST}, sharpen={PREPROCESS_SHARPEN}, median={PREPROCESS_MEDIAN}, threshold={THRESHOLD_MODE}, open={MORPH_OPEN}, close={MORPH_CLOSE}")
@@ -412,6 +568,7 @@ def main() -> None:
 
     pages_meta: list[dict[str, Any]] = []
     pages_words: list[list[dict[str, Any]]] = []
+    pages_analysis: list[dict[str, Any]] = []
 
     total_words = 0
 
@@ -424,14 +581,16 @@ def main() -> None:
 
         img_src = save_page_image_avif_exact(orig_img, page_no)
         words = ocr_words_image_to_data(pre_img, mask_fg)
+        analysis = analyze_page_content(mask_fg, words)
 
         pages_meta.append({"w": orig_img.width, "h": orig_img.height, "img": img_src})
         pages_words.append(words)
+        pages_analysis.append(analysis)
 
         total_words += len(words)
 
         Image.fromarray(mask_fg).save(DEBUG_DIR / f"page{page_no}_ocr_mask.png")
-        print(f"  page {page_no:>4}: {orig_img.width}x{orig_img.height}, words={len(words)}")
+        print(f"  page {page_no:>4}: {orig_img.width}x{orig_img.height}, words={len(words)}, lines={len(analysis['lines'])}, regions={len(analysis['regions'])}, blocks={len(analysis['blocks'])}, markers={len(analysis['markers'])}")
 
     doc.close()
 
@@ -456,7 +615,7 @@ def main() -> None:
     # Canonical viewer data follows README: positional arrays in dedicated folders,
     # compressed with Brotli quality 11. Translation may replace ru.json independently.
     pages_path = PAGES_DIR / "pages.json"
-    write_json(pages_path, positional_encoding(pages_meta, pages_words, word_to_idx))
+    write_json(pages_path, positional_encoding(pages_meta, pages_words, pages_analysis, word_to_idx))
     brotli_file(pages_path)
     for language in ("en", "ru"):
         locale_path = LOCALES_DIR / f"{language}.json"
@@ -465,7 +624,7 @@ def main() -> None:
 
     manifest = {
         "v": 24,
-        "mode": "original_avif_plus_selectable_word_boxes",
+        "mode": "original_avif_plus_selectable_words_and_content_analysis",
         "input_pdf": str(INPUT_PDF),
         "pages": total_pages,
         "ocr_dpi": OCR_DPI,
@@ -488,6 +647,7 @@ def main() -> None:
             "min_row_pixels": MIN_ROW_PIXELS,
             "min_col_pixels": MIN_COL_PIXELS,
         },
+        "content_analysis": {"max_structural_regions": MAX_STRUCTURAL_REGIONS},
         "total_words": total_words,
         "unique_words": len(word_dict),
         "sizes": sizes,

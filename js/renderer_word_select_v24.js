@@ -17,6 +17,7 @@
   const pageInput = $('pageInput');
   const zoomLabel = $('zoomLabel');
   const toggleBoxes = $('toggleBoxes');
+  const toggleAnalysis = $('toggleAnalysis');
   const selectionInfo = $('selectionInfo');
 
   function assetUrl(src) {
@@ -39,7 +40,7 @@
     let sourceIndex = 0;
 
     for (const item of page.words || []) {
-      const [wi, dx, dy, w, h, conf] = item;
+      const [wi, dx, dy, w, h, conf, block, paragraph, line, number] = item;
       const x = prevX + dx;
       const y = prevY + dy;
       result.push({
@@ -49,6 +50,7 @@
         t: wordsDict[wi] || '',
         x, y, w, h,
         c: conf,
+        block, paragraph, line, number,
       });
       prevX = x;
       prevY = y;
@@ -422,7 +424,7 @@
       span.dataset.w = String(word.w);
       span.dataset.h = String(word.h);
 
-      span.title = `${word.t}\nvisualIndex=${word.visualIndex}\nline=${word.lineId}\nsourceIndex=${word.sourceIndex}\nconf=${word.c}\nx=${word.x} y=${word.y} w=${word.w} h=${word.h}`;
+      span.title = `${word.t}\nvisualIndex=${word.visualIndex}\nline=${word.lineId}\nsourceIndex=${word.sourceIndex}\nconf=${word.c}\nocrBlock=${word.block} paragraph=${word.paragraph} line=${word.line} word=${word.number}\nx=${word.x} y=${word.y} w=${word.w} h=${word.h}`;
       span.style.left = `${word.x}px`;
       span.style.top = `${word.y}px`;
       span.style.width = `${Math.max(1, word.w)}px`;
@@ -434,6 +436,25 @@
     }
 
     pageNode.appendChild(wordLayer);
+
+    const analysisLayer = document.createElement('div');
+    analysisLayer.className = 'analysis-layer';
+    if (!toggleAnalysis.checked) analysisLayer.classList.add('hidden');
+    const addBox = (className, box, label = '') => {
+      const node = document.createElement('div');
+      node.className = className;
+      const [x, y, w, h] = box;
+      Object.assign(node.style, { left: `${x}px`, top: `${y}px`, width: `${Math.max(1, w)}px`, height: `${Math.max(1, h)}px` });
+      node.textContent = label;
+      analysisLayer.appendChild(node);
+    };
+    for (const line of page.analysis?.lines || []) addBox('analysis-line', line);
+    for (const region of page.analysis?.regions || []) {
+      addBox(`analysis-region${region.highlighted ? ' highlighted' : ''}`, [region.x, region.y, region.w, region.h], String(region.rank));
+    }
+    (page.analysis?.blocks || []).forEach((block, index) => addBox('analysis-block', block, String(index + 1)));
+    for (const marker of page.analysis?.markers || []) addBox('analysis-marker', marker);
+    pageNode.appendChild(analysisLayer);
     setupSelection(pageNode);
 
     wrapper.appendChild(pageNode);
@@ -458,7 +479,7 @@
 
   async function main() {
     const doc = await loadJson('data/pages/pages.json.br');
-    pages = (doc[1] || []).map(([w, h, img, words]) => ({ w, h, img, words }));
+    pages = (doc[1] || []).map(([w, h, img, words, analysis]) => ({ w, h, img, words, analysis: analysis || {} }));
     const preferred = localStorage.getItem('pdfViewerLanguage') || 'en';
     await setLanguage(preferred === 'ru' ? 'ru' : 'en');
   }
@@ -507,6 +528,7 @@
     renderPage(currentPage);
   });
   toggleBoxes.addEventListener('change', () => renderPage(currentPage));
+  toggleAnalysis.addEventListener('change', () => renderPage(currentPage));
 
   window.addEventListener('resize', () => {
     if (zoom === 0) renderPage(currentPage);

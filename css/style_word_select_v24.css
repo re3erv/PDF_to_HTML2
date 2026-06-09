@@ -105,3 +105,27 @@ html, body {
   border: 1px solid #ffb3b3;
   white-space: pre-wrap;
 }
+
+.analysis-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.analysis-layer.hidden { display: none; }
+
+.analysis-line, .analysis-region, .analysis-block, .analysis-marker {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+}
+
+.analysis-line { border: 2px dashed #d00; }
+.analysis-region { border: 2px solid rgba(120, 70, 200, .8); color: #482080; background: rgba(160, 110, 240, .08); }
+.analysis-region.highlighted { background: rgba(80, 210, 120, .24); }
+.analysis-block { border: 2px solid rgba(220, 120, 60, .8); color: #873900; background: rgba(255, 180, 130, .18); align-items: flex-start; justify-content: flex-start; }
+.analysis-marker { border: 2px solid #d8a800; background: rgba(255, 230, 40, .45); }
