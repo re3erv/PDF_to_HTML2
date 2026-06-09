@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PDF Accessible HTML Viewer</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="toolbar" aria-label="Панель управления">
+    <button id="prev-page" type="button">← Страница</button>
+    <button id="next-page" type="button">Страница →</button>
+
+    <label>
+      Zoom
+      <input id="zoom" type="range" min="0.5" max="2.5" step="0.1" value="1">
+    </label>
+
+    <label><input id="toggle-boxes" type="checkbox" checked> слова</label>
+    <label><input id="toggle-regions" type="checkbox" checked> области</label>
+    <label><input id="toggle-lines" type="checkbox" checked> линии</label>
+    <label><input id="toggle-blocks" type="checkbox" checked> блоки</label>
+
+    <button id="lang-ru" type="button">RU</button>
+    <button id="lang-en" type="button">EN</button>
+
+    <label>
+      скорость
+      <input id="speech-rate" type="range" min="0.5" max="2.5" step="0.1" value="1.2">
+    </label>
+
+    <button id="speak-selected" type="button">Озвучить выбранное</button>
+    <button id="read-doc" type="button">Последовательное чтение</button>
+
+    <span id="status" role="status">Загрузка…</span>
+  </header>
+
+  <main id="page-container" tabindex="0" aria-label="Страница PDF"></main>
+
+  <script src="js/renderer.js"></script>
+</body>
+</html>
