@@ -3,6 +3,8 @@
 
   let pages = [];
   let wordsDict = [];
+  let originalWordsDict = [];
+  let translatedWordsDict = [];
   let currentPage = 0;
   let zoom = Number(localStorage.getItem('wordSelectV24Zoom') || '0');
 
@@ -10,6 +12,8 @@
   let dragState = null;
   let currentVisualWords = [];
   let currentVisualLines = [];
+  let isReading = false;
+  let readingGeneration = 0;
 
   const $ = (id) => document.getElementById(id);
   const pageContainer = $('page-container');
@@ -19,6 +23,8 @@
   const toggleBoxes = $('toggleBoxes');
   const toggleAnalysis = $('toggleAnalysis');
   const selectionInfo = $('selectionInfo');
+  const speechRate = $('speechRate');
+  const btnRead = $('btnRead');
 
   function assetUrl(src) {
     if (!src) return '';
@@ -45,6 +51,7 @@
       const y = prevY + dy;
       result.push({
         sourceIndex,
+        wi,
         visualIndex: -1,
         lineId: -1,
         t: wordsDict[wi] || '',
@@ -179,6 +186,7 @@
     if (!node || !node.classList || !node.classList.contains('word-box')) return null;
     return {
       sourceIndex: Number(node.dataset.sourceIndex),
+      wi: Number(node.dataset.wordIndex),
       visualIndex: Number(node.dataset.visualIndex),
       lineId: Number(node.dataset.lineId),
       t: node.dataset.text || '',
@@ -193,6 +201,18 @@
     selectedWords = [];
     document.querySelectorAll('.word-box.selected').forEach((node) => node.classList.remove('selected'));
     updateSelectionInfo();
+  }
+
+  function isSegmentEnd(text) {
+    return /[.!?;:]\s*$/.test(text);
+  }
+
+  function sentenceRange(visualIndex) {
+    let from = visualIndex;
+    let to = visualIndex;
+    while (from > 0 && !isSegmentEnd(currentVisualWords[from - 1].t)) from -= 1;
+    while (to < currentVisualWords.length - 1 && !isSegmentEnd(currentVisualWords[to].t)) to += 1;
+    return [from, to];
   }
 
   function lineFromPoint(point) {
@@ -350,6 +370,7 @@
         anchorVisual,
         focusVisual: anchorVisual,
         append: event.ctrlKey || event.metaKey || event.shiftKey,
+        moved: false,
       };
 
       applyRangeSelection(dragState.anchorVisual, dragState.focusVisual, { append: dragState.append });
@@ -361,10 +382,16 @@
         if (focusVisual === null) return;
 
         dragState.focusVisual = focusVisual;
+        dragState.moved = dragState.moved || focusVisual !== dragState.anchorVisual;
         applyRangeSelection(dragState.anchorVisual, dragState.focusVisual, { append: dragState.append });
       };
 
       const onUp = () => {
+        if (dragState && !dragState.moved && !dragState.append) {
+          const [from, to] = sentenceRange(dragState.anchorVisual);
+          applyRangeSelection(from, to);
+        }
+        if (isReading) startReading();
         dragState = null;
         window.removeEventListener('mousemove', onMove);
         window.removeEventListener('mouseup', onUp);
@@ -416,6 +443,7 @@
       span.textContent = word.t;
 
       span.dataset.sourceIndex = String(word.sourceIndex);
+      span.dataset.wordIndex = String(word.wi);
       span.dataset.visualIndex = String(word.visualIndex);
       span.dataset.lineId = String(word.lineId);
       span.dataset.text = word.t;
@@ -467,9 +495,90 @@
     renderPage(n - 1);
   }
 
+  function clearSpeaking() {
+    document.querySelectorAll('.word-box.speaking').forEach((node) => node.classList.remove('speaking'));
+  }
+
+  function stopReading() {
+    isReading = false;
+    readingGeneration += 1;
+    speechSynthesis.cancel();
+    clearSpeaking();
+    btnRead.textContent = '▶ Читать';
+  }
+
+  function segmentWords(words, startVisual = 0) {
+    const segments = [];
+    let segment = [];
+    for (const word of words) {
+      if (word.visualIndex < startVisual) continue;
+      segment.push(word);
+      if (isSegmentEnd(word.t)) {
+        segments.push(segment);
+        segment = [];
+      }
+    }
+    if (segment.length) segments.push(segment);
+    return segments;
+  }
+
+  function speakSegment(words, dictionary, language, generation) {
+    const spokenWords = words.map((word) => dictionary[word.wi] || word.t);
+    const text = spokenWords.join(' ');
+    if (!text.trim()) return Promise.resolve();
+
+    const offsets = [];
+    let offset = 0;
+    for (const word of spokenWords) {
+      offsets.push(offset);
+      offset += word.length + 1;
+    }
+
+    return new Promise((resolve) => {
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = language;
+      utterance.rate = Number(speechRate.value || 1.5);
+      utterance.onboundary = (event) => {
+        if (generation !== readingGeneration) return;
+        let index = offsets.findLastIndex((value) => value <= event.charIndex);
+        index = Math.max(0, index);
+        clearSpeaking();
+        wordNodeByVisualIndex(words[index].visualIndex)?.classList.add('speaking');
+      };
+      utterance.onend = resolve;
+      utterance.onerror = resolve;
+      speechSynthesis.speak(utterance);
+    });
+  }
+
+  async function readDocument(generation, startPage, startVisual) {
+    for (let pageIndex = startPage; pageIndex < pages.length && generation === readingGeneration; pageIndex += 1) {
+      if (currentPage !== pageIndex) renderPage(pageIndex);
+      const segments = segmentWords(currentVisualWords, pageIndex === startPage ? startVisual : 0);
+      for (const segment of segments) {
+        if (generation !== readingGeneration) return;
+        await speakSegment(segment, originalWordsDict, 'en-US', generation);
+        const hasTranslation = segment.some((word) => translatedWordsDict[word.wi] && translatedWordsDict[word.wi] !== originalWordsDict[word.wi]);
+        if (hasTranslation && generation === readingGeneration) {
+          await speakSegment(segment, translatedWordsDict, 'ru-RU', generation);
+        }
+      }
+    }
+    if (generation === readingGeneration) stopReading();
+  }
+
+  function startReading() {
+    speechSynthesis.cancel();
+    clearSpeaking();
+    isReading = true;
+    readingGeneration += 1;
+    btnRead.textContent = '■ Стоп';
+    const startVisual = selectedWords[0]?.visualIndex || 0;
+    readDocument(readingGeneration, currentPage, startVisual);
+  }
+
   async function setLanguage(language) {
-    const locale = await loadJson(`data/locales/${language}.json.br`);
-    wordsDict = locale[0] || [];
+    wordsDict = language === 'ru' ? translatedWordsDict : originalWordsDict;
     document.documentElement.lang = language;
     document.querySelectorAll('.language').forEach((button) => {
       button.classList.toggle('active', button.id === `btnLang${language[0].toUpperCase()}${language.slice(1)}`);
@@ -480,6 +589,12 @@
   async function main() {
     const doc = await loadJson('data/pages/pages.json.br');
     pages = (doc[1] || []).map(([w, h, img, words, analysis]) => ({ w, h, img, words, analysis: analysis || {} }));
+    const [originalLocale, translatedLocale] = await Promise.all([
+      loadJson('data/locales/en.json.br'),
+      loadJson('data/locales/ru.json.br'),
+    ]);
+    originalWordsDict = originalLocale[0] || [];
+    translatedWordsDict = translatedLocale[0] || [];
     const preferred = localStorage.getItem('pdfViewerLanguage') || 'en';
     await setLanguage(preferred === 'ru' ? 'ru' : 'en');
   }
@@ -506,6 +621,7 @@
     setLanguage('ru');
   });
   $('btnClearSelection').addEventListener('click', clearSelection);
+  btnRead.addEventListener('click', () => isReading ? stopReading() : startReading());
   $('btnPrev').addEventListener('click', () => goToPage(currentPage));
   $('btnNext').addEventListener('click', () => goToPage(currentPage + 2));
   $('btnGo').addEventListener('click', () => goToPage(pageInput.value || 1));

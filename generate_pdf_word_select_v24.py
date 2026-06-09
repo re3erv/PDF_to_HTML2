@@ -44,7 +44,9 @@ OCR_LANG = os.getenv("OCR_LANG", "rus+eng")
 OCR_DPI = int(os.getenv("OCR_DPI", "300"))
 OCR_PSM = int(os.getenv("OCR_PSM", "11"))
 OCR_MIN_CONF = float(os.getenv("OCR_MIN_CONF", "0"))
-QUALITY_AVIF = int(os.getenv("QUALITY_AVIF", "65"))
+QUALITY_AVIF = int(os.getenv("QUALITY_AVIF", "85"))
+MAX_PORTRAIT_SIZE = (1080, 1920)
+MAX_LANDSCAPE_SIZE = (1920, 1080)
 
 # preprocessing for OCR only
 PREPROCESS_CONTRAST = float(os.getenv("PREPROCESS_CONTRAST", "1.8"))
@@ -170,7 +172,10 @@ def configure_tesseract() -> None:
 
 def render_pdf_page(page, dpi: int):
     pix = page.get_pixmap(dpi=dpi, alpha=False)
-    return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    max_size = MAX_PORTRAIT_SIZE if image.height >= image.width else MAX_LANDSCAPE_SIZE
+    image.thumbnail(max_size, Image.Resampling.LANCZOS)
+    return image
 
 
 def save_page_image_avif_exact(image, page_no: int) -> str:
@@ -656,6 +661,7 @@ def main() -> None:
 
     image_size = dir_size(IMG_DIR, ("page*.avif", "page*.png"))
     debug_size = dir_size(DEBUG_DIR, ("page*_ocr_mask.png",))
+    total_output_size = sum(path.stat().st_size for path in DATA_DIR.rglob("*") if path.is_file())
 
     print()
     print("=" * 92)
@@ -667,6 +673,7 @@ def main() -> None:
     avg_image = image_size / max(1, total_pages)
     print(f"Page images:         {image_size:>10,} байт (~{image_size / 1024:.1f} КБ), avg={avg_image:,.0f} байт/page, AVIF quality={QUALITY_AVIF}")
     print(f"Debug masks:         {debug_size:>10,} байт (~{debug_size / 1024:.1f} КБ)")
+    print(f"Суммарный вес файлов:{total_output_size:>10,} байт (~{total_output_size / 1024 / 1024:.2f} МБ)")
     print()
     print("Сравнение хранения word layer:")
     for filename, item in sizes.items():

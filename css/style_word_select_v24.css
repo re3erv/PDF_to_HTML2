@@ -30,6 +30,10 @@ html, body {
   padding: 4px;
 }
 
+#toolbar select {
+  padding: 4px;
+}
+
 #toolbar .hint {
   opacity: .8;
   font-size: 13px;
@@ -96,6 +100,11 @@ html, body {
 .word-layer.hide-boxes .word-box.selected {
   border-color: rgba(0, 95, 255, 0.95);
   background: rgba(0, 120, 255, 0.34);
+}
+
+.word-box.speaking {
+  border-color: #d00000;
+  background: rgba(255, 210, 0, 0.58);
 }
 
 .error {
