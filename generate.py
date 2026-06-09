@@ -1,212 +1,176 @@
+"""Преобразует векторные страницы input1.pdf в автономные SVG-страницы HTML-просмотрщика."""
+
+import html
 import json
-import os
+import re
 import shutil
+import zlib
 from pathlib import Path
 
 import brotli
 
-# ------------------- НАСТРОЙКИ -------------------
-PAGE_WIDTH = 850
-PAGE_HEIGHT = 1140
-
+PDF_PATH = Path("input1.pdf")
 DATA_DIR = Path("data")
 LOCALES_DIR = Path("locales")
+OUTPUT_PATH = DATA_DIR / "pages.json.br"
 
-# Фрагмент из произведения Льюиса Кэрролла «Alice's Adventures in Wonderland»
-# (1865, общественное достояние). Русский текст — перевод для этого проекта.
-CONTENT = [
-    [
-        (
-            "ALICE'S ADVENTURES IN WONDERLAND",
-            "ПРИКЛЮЧЕНИЯ АЛИСЫ В СТРАНЕ ЧУДЕС",
-            "title",
-        ),
-        ("Lewis Carroll · 1865", "Льюис Кэрролл · 1865", "subtitle"),
-        ("CHAPTER I. Down the Rabbit-Hole", "ГЛАВА I. Вниз по кроличьей норе", "chapter"),
-        (
-            "Alice was beginning to get very tired of sitting by her sister on the bank, "
-            "and of having nothing to do: once or twice she had peeped into the book her "
-            "sister was reading, but it had no pictures or conversations in it, ‘and what "
-            "is the use of a book,’ thought Alice ‘without pictures or conversations?’",
-            "Алисе начинало ужасно надоедать сидеть рядом с сестрой на берегу без всякого "
-            "дела. Раз или два она заглянула в книгу, которую читала сестра, но там не было "
-            "ни картинок, ни разговоров. «И что пользы от книги, — подумала Алиса, — если "
-            "в ней нет ни картинок, ни разговоров?»",
-            "body",
-        ),
-        (
-            "So she was considering in her own mind (as well as she could, for the hot day "
-            "made her feel very sleepy and stupid), whether the pleasure of making a "
-            "daisy-chain would be worth the trouble of getting up and picking the daisies, "
-            "when suddenly a White Rabbit with pink eyes ran close by her.",
-            "Она размышляла про себя (насколько могла, потому что от жаркого дня её клонило "
-            "в сон и мысли путались), стоит ли удовольствие сплести цепочку из маргариток "
-            "того, чтобы встать и нарвать цветов, как вдруг совсем рядом пробежал Белый "
-            "Кролик с розовыми глазами.",
-            "body",
-        ),
-    ],
-    [
-        (
-            "There was nothing so VERY remarkable in that; nor did Alice think it so VERY "
-            "much out of the way to hear the Rabbit say to itself, ‘Oh dear! Oh dear! I shall "
-            "be late!’ (when she thought it over afterwards, it occurred to her that she "
-            "ought to have wondered at this, but at the time it all seemed quite natural); "
-            "but when the Rabbit actually TOOK A WATCH OUT OF ITS WAISTCOAT-POCKET, and "
-            "looked at it, and then hurried on, Alice started to her feet, for it flashed "
-            "across her mind that she had never before seen a rabbit with either a "
-            "waistcoat-pocket, or a watch to take out of it, and burning with curiosity, "
-            "she ran across the field after it, and fortunately was just in time to see it "
-            "pop down a large rabbit-hole under the hedge.",
-            "Само по себе это не было ТАК уж удивительно; и Алиса не сочла ТАК уж необычным, "
-            "услышав, как Кролик говорит себе: «Ах, боже мой! Боже мой! Я опоздаю!» "
-            "(позже, обдумав случившееся, она поняла, что этому следовало удивиться, но в "
-            "тот миг всё казалось совершенно естественным). Но когда Кролик и в самом деле "
-            "ДОСТАЛ ЧАСЫ ИЗ КАРМАНА ЖИЛЕТА, взглянул на них и поспешил дальше, Алиса вскочила: "
-            "её вдруг осенило, что прежде она никогда не видела кролика ни с карманом на "
-            "жилете, ни с часами, которые можно из него достать. Сгорая от любопытства, она "
-            "побежала за ним через поле и, к счастью, успела заметить, как он юркнул в "
-            "большую кроличью нору под изгородью.",
-            "body_tall",
-        ),
-        (
-            "In another moment down went Alice after it, never once considering how in the "
-            "world she was to get out again.",
-            "В следующий миг Алиса нырнула туда следом, ни разу не задумавшись, как же она "
-            "потом выберется обратно.",
-            "body_short",
-        ),
-        (
-            "The rabbit-hole went straight on like a tunnel for some way, and then dipped "
-            "suddenly down, so suddenly that Alice had not a moment to think about stopping "
-            "herself before she found herself falling down a very deep well.",
-            "Сначала кроличья нора шла прямо, словно туннель, а потом внезапно круто "
-            "обрывалась вниз — так внезапно, что Алиса не успела и подумать о том, чтобы "
-            "остановиться, как уже падала в очень глубокий колодец.",
-            "body",
-        ),
-        (
-            "Either the well was very deep, or she fell very slowly, for she had plenty of "
-            "time as she went down to look about her and to wonder what was going to happen next.",
-            "То ли колодец был очень глубок, то ли падала она очень медленно, но по пути у "
-            "неё было достаточно времени осмотреться и подумать, что же случится дальше.",
-            "body",
-        ),
-    ],
-]
-
-STYLE_PRESETS = {
-    "title": {"font": "Georgia", "size": 28, "bold": True, "italic": False, "color": "#23395d", "x": 70, "y": 70, "w": 710, "h": 45},
-    "subtitle": {"font": "Georgia", "size": 15, "bold": False, "italic": True, "color": "#6b4f35", "x": 70, "y": 125, "w": 710, "h": 30},
-    "chapter": {"font": "Georgia", "size": 21, "bold": True, "italic": False, "color": "#6b4f35", "x": 70, "y": 180, "w": 710, "h": 40},
-    "body": {"font": "Georgia", "size": 18, "bold": False, "italic": False, "color": "#252525", "x": 70, "w": 710, "h": 205},
-    "body_tall": {"font": "Georgia", "size": 18, "bold": False, "italic": False, "color": "#252525", "x": 70, "w": 710, "h": 385},
-    "body_short": {"font": "Georgia", "size": 18, "bold": False, "italic": False, "color": "#252525", "x": 70, "w": 710, "h": 95},
-}
-
-print(f"Генерация фрагмента Alice's Adventures in Wonderland: {len(CONTENT)} страницы...")
-
-pages = []
-en_translations = []
-ru_translations = []
-for page_idx, content_page in enumerate(CONTENT):
-    elements = []
-    en_page = []
-    ru_page = []
-    body_y = 250 if page_idx == 0 else 100
-
-    for text_idx, (english, russian, preset_name) in enumerate(content_page):
-        preset = STYLE_PRESETS[preset_name]
-        y = preset.get("y", body_y)
-        elements.append({
-            "type": "text", "textIdx": text_idx,
-            "font": preset["font"], "size": preset["size"],
-            "bold": preset["bold"], "italic": preset["italic"], "color": preset["color"],
-            "x": preset["x"], "y": y, "w": preset["w"], "h": preset["h"],
-        })
-        en_page.append(english)
-        ru_page.append(russian)
-        if preset_name.startswith("body"):
-            body_y += preset["h"] + 25
-
-    divider = '<svg viewBox="0 0 710 20" xmlns="http://www.w3.org/2000/svg"><path d="M0 10 H320 M390 10 H710" stroke="#b89b72"/><circle cx="355" cy="10" r="6" fill="#b89b72"/></svg>'
-    elements.append({"type": "svg", "svg": divider, "x": 70, "y": 1080, "w": 710, "h": 20})
-    pages.append({"width": PAGE_WIDTH, "height": PAGE_HEIGHT, "elements": elements})
-    en_translations.append(en_page)
-    ru_translations.append(ru_page)
+OBJECT_RE = re.compile(rb"(?:^|\n)(\d+)\s+\d+\s+obj\s*(.*?)\s*endobj", re.DOTALL)
+PAGE_RE = re.compile(rb"/Type\s*/Page(?!s)")
+NUMBER = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)"
+MEDIA_BOX_RE = re.compile(
+    rb"/MediaBox\s*\[\s*(" + NUMBER.encode() + rb")\s+(" + NUMBER.encode()
+    + rb")\s+(" + NUMBER.encode() + rb")\s+(" + NUMBER.encode() + rb")\s*\]"
+)
+OPERATORS = {"m", "l", "c", "h", "f", "f*", "S", "n", "q", "Q", "cm", "rg", "RG", "w", "J", "j", "M", "W", "W*"}
 
 
-def intern(value, values, indexes):
-    if value not in indexes:
-        indexes[value] = len(values)
-        values.append(value)
-    return indexes[value]
+def fmt(value):
+    """Компактно записывает число, не внося заметной погрешности в геометрию."""
+    text = f"{value:.6f}".rstrip("0").rstrip(".")
+    return "0" if text in {"-0", ""} else text
 
 
-def compact_pages(source_pages):
-    fonts, font_indexes = [], {}
-    colors, color_indexes = [], {}
-    sources, source_indexes = [], {}
-    svgs, svg_indexes = [], {}
-    styles, style_indexes = [], {}
-    page_sizes, page_size_indexes = [], {}
-    compact = []
-
-    for page in source_pages:
-        elements = []
-        for element in page["elements"]:
-            element_type = element["type"]
-            if element_type == "text":
-                style = (intern(element["font"], fonts, font_indexes), element["size"], int(element["bold"]) | (int(element["italic"]) << 1), intern(element["color"], colors, color_indexes))
-                elements.append([0, element["textIdx"], intern(style, styles, style_indexes), element["x"], element["y"], element["w"], element["h"]])
-            elif element_type == "image":
-                elements.append([1, intern(element["src"], sources, source_indexes), element["x"], element["y"], element["w"], element["h"]])
-            elif element_type == "svg":
-                elements.append([2, intern(element["svg"], svgs, svg_indexes), element["x"], element["y"], element["w"], element["h"]])
-            else:
-                raise ValueError(f"Неизвестный тип элемента: {element_type}")
-        page_size = (page["width"], page["height"])
-        compact.append([intern(page_size, page_sizes, page_size_indexes), elements])
-
-    return [1, fonts, colors, sources, svgs, [list(style) for style in styles], [list(size) for size in page_sizes], compact]
+def multiply(left, right):
+    """Перемножает две affine-матрицы в SVG/PDF-представлении."""
+    a, b, c, d, e, f = left
+    g, h, i, j, k, l = right
+    return (
+        a * g + c * h,
+        b * g + d * h,
+        a * i + c * j,
+        b * i + d * j,
+        a * k + c * l + e,
+        b * k + d * l + f,
+    )
 
 
-def expand_pages(document):
-    """Восстанавливает исходную схему; используется для проверки отсутствия потерь."""
-    version, fonts, colors, sources, svgs, styles, page_sizes, compact = document
-    if version != 1:
-        raise ValueError(f"Неподдерживаемая версия формата: {version}")
-    expanded = []
-    for page_size_idx, compact_elements in compact:
-        width, height = page_sizes[page_size_idx]
-        elements = []
-        for element in compact_elements:
-            if element[0] == 0:
-                _, text_idx, style_idx, x, y, w, h = element
-                font_idx, size, flags, color_idx = styles[style_idx]
-                elements.append({"type": "text", "textIdx": text_idx, "font": fonts[font_idx], "size": size, "bold": bool(flags & 1), "italic": bool(flags & 2), "color": colors[color_idx], "x": x, "y": y, "w": w, "h": h})
-            elif element[0] == 1:
-                _, src_idx, x, y, w, h = element
-                elements.append({"type": "image", "src": sources[src_idx], "x": x, "y": y, "w": w, "h": h})
-            elif element[0] == 2:
-                _, svg_idx, x, y, w, h = element
-                elements.append({"type": "svg", "svg": svgs[svg_idx], "x": x, "y": y, "w": w, "h": h})
-            else:
-                raise ValueError(f"Неизвестный код типа элемента: {element[0]}")
-        expanded.append({"width": width, "height": height, "elements": elements})
-    return expanded
+def rgb(values):
+    channels = [max(0, min(255, round(float(value) * 255))) for value in values]
+    return "#" + "".join(f"{channel:02x}" for channel in channels)
 
 
-compact_document = compact_pages(pages)
-if expand_pages(compact_document) != pages:
-    raise AssertionError("Компактный формат изменил исходные данные")
+def get_stream(body):
+    start = body.find(b"stream")
+    if start < 0:
+        raise ValueError("Объект содержимого PDF не содержит stream")
+    start += len(b"stream")
+    if body[start:start + 2] == b"\r\n":
+        start += 2
+    elif body[start:start + 1] in {b"\r", b"\n"}:
+        start += 1
+    compressed = body[start:body.rfind(b"endstream")].rstrip(b"\r\n")
+    if b"/FlateDecode" not in body[:start]:
+        raise ValueError("Поддерживаются только FlateDecode-потоки PDF")
+    return zlib.decompress(compressed).decode("latin-1")
 
-if DATA_DIR.exists():
-    shutil.rmtree(DATA_DIR)
-if LOCALES_DIR.exists():
-    shutil.rmtree(LOCALES_DIR)
-DATA_DIR.mkdir()
-LOCALES_DIR.mkdir()
+
+def parse_pdf(path):
+    payload = path.read_bytes()
+    objects = {int(match.group(1)): match.group(2) for match in OBJECT_RE.finditer(payload)}
+    pages = []
+    for object_number, body in objects.items():
+        if not PAGE_RE.search(body):
+            continue
+        media_box = MEDIA_BOX_RE.search(body)
+        contents = re.search(rb"/Contents\s*\[(.*?)\]", body, re.DOTALL)
+        if not media_box or not contents:
+            raise ValueError(f"Не удалось прочитать страницу из PDF-объекта {object_number}")
+        x0, y0, x1, y1 = (float(value) for value in media_box.groups())
+        references = [int(value) for value in re.findall(rb"(\d+)\s+0\s+R", contents.group(1))]
+        pages.append((object_number, x1 - x0, y1 - y0, "\n".join(get_stream(objects[reference]) for reference in references)))
+    if not pages:
+        raise ValueError("В PDF не найдены страницы")
+    return pages
+
+
+def page_to_svg(width, height, content):
+    state = {
+        "ctm": (1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+        "fill": "#000000",
+        "stroke": "#000000",
+        "width": 1.0,
+        "linecap": 0,
+        "linejoin": 0,
+        "miter": 10.0,
+    }
+    stack = []
+    operands = []
+    path = []
+    output = []
+    view_transform = (1.0, 0.0, 0.0, -1.0, 0.0, height)
+
+    def transformed_matrix():
+        return " ".join(fmt(value) for value in multiply(view_transform, state["ctm"]))
+
+    def paint(kind, evenodd=False):
+        if not path:
+            return
+        attributes = [f'd="{html.escape(" ".join(path), quote=True)}"', f'transform="matrix({transformed_matrix()})"']
+        if kind == "fill":
+            attributes.extend((f'fill="{state["fill"]}"', 'stroke="none"'))
+            if evenodd:
+                attributes.append('fill-rule="evenodd"')
+        else:
+            linecaps = ("butt", "round", "square")
+            linejoins = ("miter", "round", "bevel")
+            attributes.extend((
+                'fill="none"', f'stroke="{state["stroke"]}"', f'stroke-width="{fmt(state["width"])}"',
+                f'stroke-linecap="{linecaps[min(state["linecap"], 2)]}"',
+                f'stroke-linejoin="{linejoins[min(state["linejoin"], 2)]}"', f'stroke-miterlimit="{fmt(state["miter"])}"',
+            ))
+        output.append("<path " + " ".join(attributes) + "/>")
+        path.clear()
+
+    tokens = re.findall(r"\S+", content)
+    for token in tokens:
+        if token not in OPERATORS:
+            operands.append(token)
+            continue
+        if token == "m":
+            path.append(f"M {operands[-2]} {operands[-1]}")
+        elif token == "l":
+            path.append(f"L {operands[-2]} {operands[-1]}")
+        elif token == "c":
+            path.append("C " + " ".join(operands[-6:]))
+        elif token == "h":
+            path.append("Z")
+        elif token in {"f", "f*"}:
+            paint("fill", token == "f*")
+        elif token == "S":
+            paint("stroke")
+        elif token == "n":
+            path.clear()
+        elif token == "q":
+            stack.append(state.copy())
+        elif token == "Q":
+            if not stack:
+                raise ValueError("Некорректный баланс q/Q в PDF")
+            state = stack.pop()
+        elif token == "cm":
+            state["ctm"] = multiply(state["ctm"], tuple(float(value) for value in operands[-6:]))
+        elif token == "rg":
+            state["fill"] = rgb(operands[-3:])
+        elif token == "RG":
+            state["stroke"] = rgb(operands[-3:])
+        elif token == "w":
+            state["width"] = float(operands[-1])
+        elif token == "J":
+            state["linecap"] = int(float(operands[-1]))
+        elif token == "j":
+            state["linejoin"] = int(float(operands[-1]))
+        elif token == "M":
+            state["miter"] = float(operands[-1])
+        # W/W* задают clip-path страницы; MediaBox и overflow уже ограничивают результат.
+        operands.clear()
+
+    if path:
+        raise ValueError("После разбора страницы остался незакрашенный путь")
+    if stack:
+        raise ValueError("Некорректный баланс q/Q в PDF")
+    return (
+        f'<svg viewBox="0 0 {fmt(width)} {fmt(height)}" xmlns="http://www.w3.org/2000/svg" '
+        f'role="img" aria-label="Страница PDF">{"".join(output)}</svg>'
+    )
 
 
 def write_brotli_json(data, destination):
@@ -214,20 +178,30 @@ def write_brotli_json(data, destination):
     destination.write_bytes(brotli.compress(payload, quality=11))
 
 
-pages_br_path = DATA_DIR / "pages.json.br"
-ru_br_path = LOCALES_DIR / "ru.json.br"
-en_br_path = LOCALES_DIR / "en.json.br"
-write_brotli_json(compact_document, pages_br_path)
-write_brotli_json(ru_translations, ru_br_path)
-write_brotli_json(en_translations, en_br_path)
+def main():
+    parsed_pages = parse_pdf(PDF_PATH)
+    svgs = []
+    page_sizes = []
+    page_size_indexes = {}
+    pages = []
+    for page_number, (_, width, height, content) in enumerate(parsed_pages, start=1):
+        print(f"Преобразование страницы {page_number} из {len(parsed_pages)}...")
+        size = (width, height)
+        if size not in page_size_indexes:
+            page_size_indexes[size] = len(page_sizes)
+            page_sizes.append(list(size))
+        pages.append([page_size_indexes[size], len(svgs)])
+        svgs.append(page_to_svg(width, height, content))
 
-def file_size(path):
-    return os.path.getsize(path)
+    if DATA_DIR.exists():
+        shutil.rmtree(DATA_DIR)
+    if LOCALES_DIR.exists():
+        shutil.rmtree(LOCALES_DIR)
+    DATA_DIR.mkdir()
+    document = [2, svgs, page_sizes, pages]
+    write_brotli_json(document, OUTPUT_PATH)
+    print(f"Готово: {len(pages)} страниц, {OUTPUT_PATH.stat().st_size:,} байт")
 
 
-print("Генерация завершена!")
-print(f"Страниц: {len(CONTENT)}")
-print(f"pages.json.br: {file_size(pages_br_path):,} байт")
-print(f"ru.json.br: {file_size(ru_br_path):,} байт")
-print(f"en.json.br: {file_size(en_br_path):,} байт")
-print("Запустите сервер: python server.py")
+if __name__ == "__main__":
+    main()
