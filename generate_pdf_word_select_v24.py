@@ -306,12 +306,12 @@ def _empty_runs(values: Any) -> list[tuple[int, int]]:
     return runs
 
 
-def find_structural_regions(width: int, height: int, words: list[dict[str, Any]], lines: list[list[int]]) -> tuple[list[dict[str, Any]], float]:
+def find_structural_regions(mask_fg: Any, words: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], float]:
     """Recursively find whitespace cuts, then rank them independently by thickness."""
-    occupied = np.zeros((height, width), dtype=np.uint8)
-    for item in [*[ [word["x"], word["y"], word["w"], word["h"]] for word in words], *lines]:
-        x, y, w, h = item
-        occupied[max(0, y):min(height, y + h), max(0, x):min(width, x + w)] = 1
+    height, width = mask_fg.shape[:2]
+    # Use actual foreground pixels so whitespace between symbols remains searchable.
+    # OCR word boxes also cover that whitespace and may omit unrecognized symbols.
+    occupied = mask_fg > 0
 
     line_centers: dict[tuple[int, int, int], list[float]] = {}
     for word in words:
@@ -413,7 +413,7 @@ def find_list_markers(mask_fg: Any, words: list[dict[str, Any]]) -> list[list[in
 def analyze_page_content(mask_fg: Any, words: list[dict[str, Any]]) -> dict[str, Any]:
     height, width = mask_fg.shape[:2]
     lines = detect_linear_objects(mask_fg)
-    regions, average_interval = find_structural_regions(width, height, words, lines)
+    regions, average_interval = find_structural_regions(mask_fg, words)
     return {
         "averageLineInterval": average_interval,
         "lines": lines,
