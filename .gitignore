@@ -1,5 +1,4 @@
 __pycache__/
 
-# Производные артефакты: создаются только командой `python generate.py`.
+# Производные артефакты: создаются командами `python generate.py` или `python handler.py`.
 /data/
-/locales/

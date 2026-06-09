@@ -1,6 +1,4 @@
 let pages = [];
-let svgs = [];
-let pageSizes = [];
 let currentPage = 1;
 
 const container = document.getElementById('page-container');
@@ -21,11 +19,11 @@ async function loadBrotliJson(path) {
 
 async function loadData() {
   try {
-    const [version, loadedSvgs, loadedPageSizes, loadedPages] = await loadBrotliJson('data/pages.json.br');
-    if (version !== 2) throw new Error(`Неподдерживаемая версия pages.json.br: ${version}`);
-    svgs = loadedSvgs;
-    pageSizes = loadedPageSizes;
-    pages = loadedPages;
+    const data = await loadBrotliJson('data/pages/index.json.br');
+    if (data.version !== 1 || !Array.isArray(data.pages)) {
+      throw new Error(`Неподдерживаемый формат data/pages/index.json.br`);
+    }
+    pages = data.pages;
     renderPage(currentPage);
   } catch (error) {
     container.innerHTML = `<p class="error">Ошибка загрузки: ${error.message}</p>`;
@@ -34,14 +32,14 @@ async function loadData() {
 }
 
 function renderPage(pageNum) {
-  const pageData = pages[pageNum - 1];
-  if (!pageData) return;
-  const [pageSizeIdx, svgIdx] = pageData;
-  const [pageWidth, pageHeight] = pageSizes[pageSizeIdx];
-  container.innerHTML = svgs[svgIdx];
-  const svg = container.firstElementChild;
-  svg.style.aspectRatio = `${pageWidth} / ${pageHeight}`;
-  svg.dataset.page = pageNum;
+  const page = pages[pageNum - 1];
+  if (!page) return;
+  const image = new Image();
+  image.src = `data/${page.image}`;
+  image.alt = `Страница ${pageNum}`;
+  image.width = page.width;
+  image.height = page.height;
+  container.replaceChildren(image);
   updateControls(pageNum);
 }
 

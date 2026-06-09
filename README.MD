@@ -32,6 +32,7 @@
 ```bash
 python -m pip install -r requirements.txt
 python generate.py
+python handler.py
 python server.py
 curl -I http://127.0.0.1:8000/data/pages.json.br
 ```
