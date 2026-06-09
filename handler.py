@@ -4,7 +4,7 @@ from pathlib import Path
 
 from src.converter import convert_pdf
 
-PDF_PATH = Path("input1.pdf")
+PDF_PATH = Path("input.pdf")
 DATA_DIR = Path("data")
 
 
