@@ -1,3 +1,3 @@
 cd C:\Users\user1\Documents\IT\PDF_to_HTML
-python generate_pdf_word_select_v24.py
-python -m http.server 8000
+python handler.py
+python server.py

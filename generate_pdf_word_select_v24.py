@@ -13,62 +13,37 @@ from __future__ import annotations
 
 import csv
 import gzip
-import importlib
 import io
 import json
 import os
 from pathlib import Path
 import shutil
-import subprocess
-import sys
 from typing import Any
 
+import brotli
+import cv2
+import fitz
+import numpy as np
+from PIL import Image, ImageEnhance
+import pillow_avif  # noqa: F401 - registers AVIF support in Pillow
+import pytesseract
+import zstandard
 
-# ------------------- dependency helpers -------------------
-def install(package: str) -> None:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-
-
-def ensure_import(import_name: str, package_name: str | None = None):
-    try:
-        return importlib.import_module(import_name)
-    except ImportError:
-        pkg = package_name or import_name
-        print(f"Устанавливаю {pkg}...")
-        install(pkg)
-        return importlib.import_module(import_name)
-
-
-fitz = ensure_import("fitz", "pymupdf")
-Image = ensure_import("PIL.Image", "pillow")
-ImageEnhance = ensure_import("PIL.ImageEnhance", "pillow")
-pytesseract = ensure_import("pytesseract")
-np = ensure_import("numpy")
-cv2 = ensure_import("cv2", "opencv-python-headless")
-
-try:
-    ensure_import("pillow_avif", "pillow-avif-plugin")
-    HAS_AVIF = True
-except Exception:
-    HAS_AVIF = False
-
-try:
-    zstandard = ensure_import("zstandard")
-    HAS_ZSTD = True
-except Exception:
-    zstandard = None
-    HAS_ZSTD = False
+HAS_AVIF = True
+HAS_ZSTD = True
 
 
 # ------------------- defaults -------------------
-INPUT_PDF = Path(os.getenv("INPUT_PDF", "input.pdf"))
+INPUT_PDF = Path(os.getenv("INPUT_PDF", "input1.pdf"))
+if not INPUT_PDF.exists() and not os.getenv("INPUT_PDF"):
+    INPUT_PDF = Path("input.pdf")
 TESSERACT_CMD = os.getenv("TESSERACT_CMD", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
 
 OCR_LANG = os.getenv("OCR_LANG", "rus+eng")
 OCR_DPI = int(os.getenv("OCR_DPI", "300"))
 OCR_PSM = int(os.getenv("OCR_PSM", "11"))
 OCR_MIN_CONF = float(os.getenv("OCR_MIN_CONF", "0"))
-QUALITY_AVIF = int(os.getenv("QUALITY_AVIF", "25"))
+QUALITY_AVIF = int(os.getenv("QUALITY_AVIF", "65"))
 
 # preprocessing for OCR only
 PREPROCESS_CONTRAST = float(os.getenv("PREPROCESS_CONTRAST", "1.8"))
@@ -91,7 +66,9 @@ ZSTD_LEVEL = int(os.getenv("ZSTD_LEVEL", "19"))
 
 DATA_DIR = Path("data")
 IMG_DIR = DATA_DIR / "images"
-LOCALES_DIR = Path("locales")
+LOCALES_DIR = DATA_DIR / "locales"
+PAGES_DIR = DATA_DIR / "pages"
+DIAGRAM_DIR = DATA_DIR / "diagram"
 DEBUG_DIR = DATA_DIR / "debug"
 
 
@@ -99,7 +76,9 @@ DEBUG_DIR = DATA_DIR / "debug"
 def clean_output_dirs() -> None:
     DATA_DIR.mkdir(exist_ok=True)
     IMG_DIR.mkdir(parents=True, exist_ok=True)
-    LOCALES_DIR.mkdir(exist_ok=True)
+    LOCALES_DIR.mkdir(parents=True, exist_ok=True)
+    PAGES_DIR.mkdir(parents=True, exist_ok=True)
+    DIAGRAM_DIR.mkdir(parents=True, exist_ok=True)
     DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 
     cleanup = [
@@ -112,6 +91,12 @@ def clean_output_dirs() -> None:
         DATA_DIR / "pages.word_select_v24.delta.json.zst",
         DATA_DIR / "manifest.word_select_v24.json",
         LOCALES_DIR / "words_v24.json",
+        LOCALES_DIR / "en.json",
+        LOCALES_DIR / "en.json.br",
+        LOCALES_DIR / "ru.json",
+        LOCALES_DIR / "ru.json.br",
+        PAGES_DIR / "pages.json",
+        PAGES_DIR / "pages.json.br",
     ]
     for path in cleanup:
         path.unlink(missing_ok=True)
@@ -154,6 +139,13 @@ def zstd_file(path: Path) -> int:
     out = path.with_suffix(path.suffix + ".zst")
     cctx = zstandard.ZstdCompressor(level=ZSTD_LEVEL)
     out.write_bytes(cctx.compress(path.read_bytes()))
+    return out.stat().st_size
+
+
+def brotli_file(path: Path) -> int:
+    """Write a browser-decodable Brotli copy using the project-required quality."""
+    out = path.with_suffix(path.suffix + ".br")
+    out.write_bytes(brotli.compress(path.read_bytes(), quality=11))
     return out.stat().st_size
 
 
@@ -384,6 +376,21 @@ def delta_encoding(pages_meta: list[dict[str, Any]], pages_words: list[list[dict
 
 
 # ------------------- main -------------------
+
+def positional_encoding(pages_meta: list[dict[str, Any]], pages_words: list[list[dict[str, Any]]], word_to_idx: dict[str, int]):
+    """Encode page structure and formatting as positional arrays."""
+    pages = []
+    for meta, words in zip(pages_meta, pages_words, strict=True):
+        encoded = []
+        prev_x = 0
+        prev_y = 0
+        for word in words:
+            encoded.append([word_to_idx[word["t"]], word["x"] - prev_x, word["y"] - prev_y, word["w"], word["h"], word["c"]])
+            prev_x = word["x"]
+            prev_y = word["y"]
+        pages.append([meta["w"], meta["h"], meta["img"], encoded])
+    return [24, pages]
+
 def main() -> None:
     configure_tesseract()
     clean_output_dirs()
@@ -445,6 +452,16 @@ def main() -> None:
         sizes[filename] = {"raw": raw, "gz": gz, "zst": zst}
 
     write_json(LOCALES_DIR / "words_v24.json", [" ".join(w["t"] for w in words) for words in pages_words], pretty=True)
+
+    # Canonical viewer data follows README: positional arrays in dedicated folders,
+    # compressed with Brotli quality 11. Translation may replace ru.json independently.
+    pages_path = PAGES_DIR / "pages.json"
+    write_json(pages_path, positional_encoding(pages_meta, pages_words, word_to_idx))
+    brotli_file(pages_path)
+    for language in ("en", "ru"):
+        locale_path = LOCALES_DIR / f"{language}.json"
+        write_json(locale_path, [word_dict])
+        brotli_file(locale_path)
 
     manifest = {
         "v": 24,

@@ -446,11 +446,21 @@
     renderPage(n - 1);
   }
 
+  async function setLanguage(language) {
+    const locale = await loadJson(`data/locales/${language}.json.br`);
+    wordsDict = locale[0] || [];
+    document.documentElement.lang = language;
+    document.querySelectorAll('.language').forEach((button) => {
+      button.classList.toggle('active', button.id === `btnLang${language[0].toUpperCase()}${language.slice(1)}`);
+    });
+    renderPage(currentPage);
+  }
+
   async function main() {
-    const doc = await loadJson('data/pages.word_select_v24.delta.json');
-    pages = doc.p || [];
-    wordsDict = doc.d?.words || [];
-    renderPage(0);
+    const doc = await loadJson('data/pages/pages.json.br');
+    pages = (doc[1] || []).map(([w, h, img, words]) => ({ w, h, img, words }));
+    const preferred = localStorage.getItem('pdfViewerLanguage') || 'en';
+    await setLanguage(preferred === 'ru' ? 'ru' : 'en');
   }
 
   document.addEventListener('copy', (event) => {
@@ -461,8 +471,19 @@
 
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') clearSelection();
+    if (event.target === pageInput) return;
+    if (event.key === 'ArrowLeft') goToPage(currentPage);
+    if (event.key === 'ArrowRight') goToPage(currentPage + 2);
   });
 
+  $('btnLangEn').addEventListener('click', () => {
+    localStorage.setItem('pdfViewerLanguage', 'en');
+    setLanguage('en');
+  });
+  $('btnLangRu').addEventListener('click', () => {
+    localStorage.setItem('pdfViewerLanguage', 'ru');
+    setLanguage('ru');
+  });
   $('btnClearSelection').addEventListener('click', clearSelection);
   $('btnPrev').addEventListener('click', () => goToPage(currentPage));
   $('btnNext').addEventListener('click', () => goToPage(currentPage + 2));

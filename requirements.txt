@@ -1,0 +1,8 @@
+brotli
+numpy
+opencv-python-headless
+pillow
+pillow-avif-plugin
+pymupdf
+pytesseract
+zstandard
