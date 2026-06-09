@@ -440,22 +440,40 @@ def sentence_break(prev_word: str, next_word: str) -> bool:
     if not stripped or stripped[-1] not in ".!?":
         return False
     normalized = stripped.rstrip(".!?").lower()
-    if normalized in ABBREVIATIONS or re.match(r"^[A-ZА-Я]\.$", stripped):
+    if normalized in ABBREVIATIONS or re.match(r"^(?:[A-ZА-Я]\.)+$", stripped):
         return False
     if re.match(r"^\(?([0-9]+|[A-Za-zА-Яа-я])\)?[.)]$", stripped):
         return False
-    return not next_word or not next_word[:1].islower()
+    if not next_word:
+        return True
+    next_letter = re.search(r"[A-Za-zА-Яа-яЁё]", next_word)
+    return bool(next_letter and next_letter.group(0).isupper())
 
 
-def build_sentences(words: list[WordBox], lines: list[dict[str, Any]], blocks: list[dict[str, Any]], markers: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Split text inside ordered blocks, including list-part boundaries from README.MD."""
+def block_position(block: dict[str, Any], page_width: int) -> str:
+    center = (block["x"] + block["w"] / 2) / max(1, page_width)
+    if center < 0.4:
+        return "left"
+    if center > 0.6:
+        return "right"
+    return "center"
+
+
+def build_sentences(words: list[WordBox], lines: list[dict[str, Any]], blocks: list[dict[str, Any]], markers: list[dict[str, Any]], page_width: int) -> list[dict[str, Any]]:
+    """Split text inside ordered blocks, allowing only README.MD block transitions."""
     marker_lines = {marker["lineId"] for marker in markers}
     line_by_id = {line["id"]: line for line in lines}
-    ordered_lines = [line_by_id[line_id] for block in blocks for line_id in block["lineIds"] if line_id in line_by_id]
+    ordered_lines = [
+        (line_by_id[line_id], block)
+        for block in blocks
+        for line_id in block["lineIds"]
+        if line_id in line_by_id
+    ]
     sentences: list[dict[str, Any]] = []
     current: list[int] = []
     rules: list[str] = []
     previous_line: dict[str, Any] | None = None
+    previous_block: dict[str, Any] | None = None
 
     def flush(rule: str) -> None:
         nonlocal current, rules
@@ -468,11 +486,21 @@ def build_sentences(words: list[WordBox], lines: list[dict[str, Any]], blocks: l
             })
         current, rules = [], []
 
-    for line_position, line in enumerate(ordered_lines):
+    for line_position, (line, block) in enumerate(ordered_lines):
         indexes = line.get("wordIndexes", [])
         if not indexes:
             continue
-        indent_changed = previous_line is not None and abs(line["x"] - previous_line["x"]) > max(8, line["h"])
+        block_changed = previous_block is not None and block["id"] != previous_block["id"]
+        allowed_block_transition = block_changed and (
+            (block_position(previous_block, page_width), block_position(block, page_width))
+            in {("left", "right"), ("center", "center")}
+        )
+        if current and block_changed and not allowed_block_transition:
+            flush("text_block_boundary")
+        indent_changed = (
+            previous_line is not None and not block_changed
+            and abs(line["x"] - previous_line["x"]) > max(8, line["h"])
+        )
         if current and (line["id"] in marker_lines or indent_changed):
             flush("list_marker" if line["id"] in marker_lines else "left_indent_change")
         if line["id"] in marker_lines:
@@ -482,7 +510,7 @@ def build_sentences(words: list[WordBox], lines: list[dict[str, Any]], blocks: l
             current.append(index)
             next_index = indexes[position + 1] if position + 1 < len(indexes) else None
             if next_index is None:
-                for following_line in ordered_lines[line_position + 1:]:
+                for following_line, _ in ordered_lines[line_position + 1:]:
                     if following_line.get("wordIndexes"):
                         next_index = following_line["wordIndexes"][0]
                         break
@@ -494,6 +522,7 @@ def build_sentences(words: list[WordBox], lines: list[dict[str, Any]], blocks: l
             rules.append("list_colon_or_semicolon")
             flush("list_colon_or_semicolon")
         previous_line = line
+        previous_block = block
 
     flush("end_of_document")
     return sentences
@@ -592,7 +621,7 @@ def process_pdf(args: argparse.Namespace) -> None:
             item["wordIndexes"] = local_indexes
             line_payload.append(item)
 
-        sentences = build_sentences(words, line_payload, blocks, markers)
+        sentences = build_sentences(words, line_payload, blocks, markers, image.width)
 
         pages_payload.append(
             {
