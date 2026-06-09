@@ -1,4 +1,0 @@
-__pycache__/
-
-# Производные артефакты: создаются командами `python generate.py` или `python handler.py`.
-/data/

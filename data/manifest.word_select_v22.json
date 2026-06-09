@@ -1,0 +1,45 @@
+{
+  "v": 22,
+  "mode": "original_avif_plus_selectable_word_boxes",
+  "input_pdf": "input.pdf",
+  "pages": 25,
+  "ocr_dpi": 300,
+  "saved_image_resolution": "same_as_ocr_render_original",
+  "quality_avif": 40,
+  "asset_format": "avif",
+  "preprocess": {
+    "contrast": 1.8,
+    "sharpen": 1.2,
+    "median": 3,
+    "threshold_mode": "otsu",
+    "morph_open": 1,
+    "morph_close": 1
+  },
+  "refine": {
+    "words": true,
+    "pad": 2,
+    "row_ink_frac": 0.08,
+    "col_ink_frac": 0.04,
+    "min_row_pixels": 2,
+    "min_col_pixels": 2
+  },
+  "total_words": 8223,
+  "unique_words": 3014,
+  "sizes": {
+    "pages.word_select_v22.readable.json": {
+      "raw": 1898269,
+      "gz": 150748,
+      "zst": 116269
+    },
+    "pages.word_select_v22.abs.json": {
+      "raw": 260254,
+      "gz": 94965,
+      "zst": 84105
+    },
+    "pages.word_select_v22.delta.json": {
+      "raw": 238008,
+      "gz": 83707,
+      "zst": 74677
+    }
+  }
+}
