@@ -1,4 +1,5 @@
 let pages = [];
+let texts = [];
 let currentPage = 1;
 
 const container = document.getElementById('page-container');
@@ -19,11 +20,15 @@ async function loadBrotliJson(path) {
 
 async function loadData() {
   try {
-    const data = await loadBrotliJson('data/pages/index.json.br');
-    if (data.version !== 1 || !Array.isArray(data.pages)) {
-      throw new Error(`Неподдерживаемый формат data/pages/index.json.br`);
+    const [layoutData, textData] = await Promise.all([
+      loadBrotliJson('data/pages/index.json.br'),
+      loadBrotliJson('data/locales/source.json.br'),
+    ]);
+    if (layoutData[0] !== 2 || !Array.isArray(layoutData[1]) || textData[0] !== 2 || !Array.isArray(textData[2])) {
+      throw new Error('Неподдерживаемый формат данных документа');
     }
-    pages = data.pages;
+    pages = layoutData[1];
+    texts = textData[2];
     renderPage(currentPage);
   } catch (error) {
     container.innerHTML = `<p class="error">Ошибка загрузки: ${error.message}</p>`;
@@ -33,14 +38,48 @@ async function loadData() {
 
 function renderPage(pageNum) {
   const page = pages[pageNum - 1];
-  if (!page) return;
-  const image = new Image();
-  image.src = `data/${page.image}`;
-  image.alt = `Страница ${pageNum}`;
-  image.width = page.width;
-  image.height = page.height;
-  container.replaceChildren(image);
+  const pageTexts = texts[pageNum - 1];
+  if (!page || !pageTexts) return;
+
+  const [width, height, textStyles, illustrations] = page;
+  const sheet = document.createElement('article');
+  sheet.className = 'page';
+  sheet.style.aspectRatio = `${width} / ${height}`;
+
+  illustrations.forEach(([path, x, y, imageWidth, imageHeight]) => {
+    const image = new Image();
+    image.src = `data/${path}`;
+    image.alt = '';
+    positionElement(image, x, y, imageWidth, imageHeight, width, height);
+    sheet.append(image);
+  });
+
+  textStyles.forEach(([x, y, textWidth, textHeight, font, size, color, flags], index) => {
+    const span = document.createElement('span');
+    span.className = 'text-span';
+    span.textContent = pageTexts[index];
+    span.style.left = `${x / width * 100}%`;
+    span.style.top = `${y / height * 100}%`;
+    span.style.width = `${textWidth / width * 100}%`;
+    span.style.height = `${textHeight / height * 100}%`;
+    span.style.fontFamily = `"${font}", sans-serif`;
+    span.style.fontSize = `${size / width * 100}cqw`;
+    span.style.color = `#${color.toString(16).padStart(6, '0')}`;
+    span.style.fontWeight = flags & 16 ? 'bold' : 'normal';
+    span.style.fontStyle = flags & 2 ? 'italic' : 'normal';
+    sheet.append(span);
+  });
+
+  container.replaceChildren(sheet);
   updateControls(pageNum);
+}
+
+function positionElement(element, x, y, width, height, pageWidth, pageHeight) {
+  element.className = 'page-image';
+  element.style.left = `${x / pageWidth * 100}%`;
+  element.style.top = `${y / pageHeight * 100}%`;
+  element.style.width = `${width / pageWidth * 100}%`;
+  element.style.height = `${height / pageHeight * 100}%`;
 }
 
 function updateControls(pageNum) {

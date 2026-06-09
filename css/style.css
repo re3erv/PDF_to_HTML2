@@ -40,12 +40,14 @@ input { width: 64px; padding: 6px; }
   background: #fff;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.22);
 }
-#page-container img {
-  display: block;
-  width: 100%;
-  height: auto;
+#page-container { container-type: inline-size; }
+.page { position: relative; width: 100%; overflow: hidden; }
+.page-image, .text-span { position: absolute; }
+.page-image { display: block; }
+.text-span {
   overflow: hidden;
-  background: #fff;
+  line-height: 1;
+  white-space: pre;
 }
 .error { margin: 0; padding: 24px; color: #b3261e; }
 @media (max-width: 520px) {
