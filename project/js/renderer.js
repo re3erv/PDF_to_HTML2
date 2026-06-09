@@ -145,7 +145,20 @@ function clearSelection() {
 }
 
 function selectWords(wordIndexes, activeWord = null) {
-  state.selected = new Set(wordIndexes);
+  const page = currentPage();
+  const words = restoreWords(page);
+  const selected = new Set(wordIndexes);
+
+  for (const line of page.lines || []) {
+    const selectedOnLine = (line.wordIndexes || []).filter((index) => selected.has(index));
+    if (!selectedOnLine.length) continue;
+    const rightEdge = Math.max(...selectedOnLine.map((index) => words[index]?.x ?? -1));
+    for (const index of line.wordIndexes || []) {
+      if (words[index] && words[index].x <= rightEdge) selected.add(index);
+    }
+  }
+
+  state.selected = selected;
   state.activeWord = activeWord;
   renderSelection();
 }
@@ -253,24 +266,27 @@ function renderPage() {
   pageNode.appendChild(overlay);
 
   if (state.showBlocks) drawRectLayer(overlay, "text-block", page.blocks || [], (item) => String(item.id));
-  if (state.showRegions) drawRectLayer(overlay, "empty-region", page.regions || [], (item) => String(item.order || ""));
+  if (state.showRegions) {
+    drawRectLayer(overlay, "empty-region", page.regions || [], (item) => String(item.order || ""));
+    drawRectLayer(overlay, "painted-region", page.paintedRegions || [], (item) => String(item.order || ""));
+  }
   if (state.showLines) drawLines(overlay, page);
 
-  if (state.showBoxes) {
-    for (const word of words) {
-      const node = document.createElement("button");
-      node.type = "button";
-      node.className = "word-box";
-      node.dataset.wordIndex = String(word.index);
-      node.style.cssText = scaledStyle(word);
-      node.title = `${word.text}\nconf=${word.conf}\nsource=${word.source}\nrule=${word.rule}`;
-      node.setAttribute("aria-label", word.text);
-      node.addEventListener("click", (event) => {
-        event.preventDefault();
-        selectSentence(word.index);
-      });
-      overlay.appendChild(node);
-    }
+  for (const word of words) {
+    const node = document.createElement("span");
+    node.className = `word-box${state.showBoxes ? "" : " outlines-hidden"}`;
+    node.dataset.wordIndex = String(word.index);
+    node.style.cssText = scaledStyle(word);
+    node.title = `${word.text}\nconf=${word.conf}\nsource=${word.source}\nrule=${word.rule}`;
+    node.setAttribute("role", "button");
+    node.setAttribute("tabindex", "0");
+    node.setAttribute("aria-label", word.text);
+    node.textContent = word.text;
+    node.addEventListener("click", () => selectSentence(word.index));
+    node.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") selectSentence(word.index);
+    });
+    overlay.appendChild(node);
   }
 
   drawRectLayer(overlay, "marker", page.markers || [], (item) => item.marker || "");

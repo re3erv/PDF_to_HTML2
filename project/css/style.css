@@ -77,7 +77,17 @@ body {
   border: 1px solid rgba(28, 105, 210, 0.25);
   border-radius: 2px;
   background: rgba(28, 105, 210, 0.03);
+  color: transparent;
+  font-size: inherit;
+  line-height: 1;
+  white-space: nowrap;
+  user-select: text;
   cursor: text;
+}
+
+.word-box.outlines-hidden {
+  border-color: transparent;
+  background: transparent;
 }
 
 .word-box:hover {
@@ -102,6 +112,18 @@ body {
   border: 1px dashed rgba(76, 175, 80, 0.7);
   background: rgba(76, 175, 80, 0.08);
   color: rgba(46, 125, 50, 0.95);
+  font-size: 0.8rem;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.painted-region {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(46, 125, 50, 0.85);
+  background: rgba(76, 175, 80, 0.3);
+  color: rgba(27, 94, 32, 0.95);
   font-size: 0.8rem;
   font-weight: 700;
   pointer-events: none;

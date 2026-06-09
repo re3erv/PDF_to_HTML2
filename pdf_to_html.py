@@ -329,70 +329,94 @@ def detect_empty_regions(width: int, height: int, words: list[WordBox], lines: l
 
 
 def select_painted_regions(width: int, height: int, regions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    painted: list[dict[str, Any]] = []
+    """Select and annotate the structural regions that README.MD says to paint."""
+    vertical = [region for region in regions if region["orientation"] == "vertical"]
+    left_thirds = [region for region in vertical if region["x"] <= width * 0.35 and region["x"] + region["w"] >= width * 0.30]
+    right_thirds = [region for region in vertical if region["x"] <= width * 0.70 and region["x"] + region["w"] >= width * 0.60]
+    selected_vertical: list[dict[str, Any]] = []
+    rules: dict[int, str] = {}
 
+    for region in vertical:
+        if region["x"] <= width * 0.525 and region["x"] + region["w"] >= width * 0.475:
+            selected_vertical.append(region)
+            rules[id(region)] = "middle_vertical_split"
+    if left_thirds and right_thirds:
+        for region in [*left_thirds, *right_thirds]:
+            selected_vertical.append(region)
+            rules[id(region)] = "thirds_vertical_split_pair"
+
+    painted = []
     for region in regions:
-        x, y, w, h = region["x"], region["y"], region["w"], region["h"]
-        horizontal_full = region["orientation"] == "horizontal" and x <= 3 and (x + w) >= width - 3
-        vertical_middle = region["orientation"] == "vertical" and x <= width * 0.525 and (x + w) >= width * 0.475
-        vertical_thirds = region["orientation"] == "vertical" and (
-            (x <= width * 0.35 and (x + w) >= width * 0.30) or
-            (x <= width * 0.70 and (x + w) >= width * 0.60)
+        horizontal_full = region["orientation"] == "horizontal" and region["x"] <= 3 and region["x"] + region["w"] >= width - 3
+        horizontal_to_vertical = region["orientation"] == "horizontal" and any(
+            (region["x"] <= 3 or region["x"] + region["w"] >= width - 3)
+            and region["x"] <= cut["x"] + cut["w"] / 2 <= region["x"] + region["w"]
+            for cut in selected_vertical
         )
-
-        if horizontal_full or vertical_middle or vertical_thirds:
+        if region in selected_vertical or horizontal_full or horizontal_to_vertical:
             copy = dict(region)
             copy["painted"] = True
-            copy["paintRule"] = (
-                "full_width_horizontal"
-                if horizontal_full
-                else "middle_vertical_split"
-                if vertical_middle
-                else "thirds_vertical_split"
-            )
+            copy["paintRule"] = rules.get(id(region), "full_width_horizontal" if horizontal_full else "horizontal_to_vertical_split")
             painted.append(copy)
-
     return painted
 
 
-def detect_blocks(words: list[WordBox], lines: list[dict[str, Any]], width: int) -> list[dict[str, Any]]:
+def detect_blocks(lines: list[dict[str, Any]], width: int, painted_regions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group lines into text blocks bounded by painted structural regions."""
     if not lines:
         return []
 
-    avg_h = float(np.median([line["h"] for line in lines])) if lines else 12.0
+    vertical_cuts = sorted(
+        region["x"] + region["w"] / 2
+        for region in painted_regions
+        if region["orientation"] == "vertical"
+    )
+    horizontal_cuts = [
+        region for region in painted_regions if region["orientation"] == "horizontal"
+    ]
+    avg_h = float(np.median([line["h"] for line in lines]))
     gap_limit = max(16, avg_h * 2.2)
-    blocks: list[list[dict[str, Any]]] = []
 
-    for line in sorted(lines, key=lambda item: (item["x"] > width / 2, item["y"], item["x"])):
-        if not blocks:
-            blocks.append([line])
-            continue
-        current = blocks[-1]
-        prev = current[-1]
-        same_column = (prev["x"] < width / 2) == (line["x"] < width / 2)
-        vertical_gap = line["y"] - (prev["y"] + prev["h"])
-        if same_column and vertical_gap <= gap_limit:
-            current.append(line)
-        else:
-            blocks.append([line])
+    def column(line: dict[str, Any]) -> int:
+        center = line["x"] + line["w"] / 2
+        return sum(center > cut for cut in vertical_cuts)
+
+    def separated(previous: dict[str, Any], current: dict[str, Any]) -> bool:
+        gap_top = previous["y"] + previous["h"]
+        for region in horizontal_cuts:
+            overlaps_x = region["x"] < current["x"] + current["w"] and region["x"] + region["w"] > current["x"]
+            if overlaps_x and gap_top <= region["y"] + region["h"] and current["y"] >= region["y"]:
+                return True
+        return False
+
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for line in lines:
+        grouped.setdefault(column(line), []).append(line)
+
+    raw_blocks: list[list[dict[str, Any]]] = []
+    for column_id in sorted(grouped):
+        for line in sorted(grouped[column_id], key=lambda item: (item["y"], item["x"])):
+            if not raw_blocks or column(raw_blocks[-1][-1]) != column_id:
+                raw_blocks.append([line])
+                continue
+            previous = raw_blocks[-1][-1]
+            vertical_gap = line["y"] - (previous["y"] + previous["h"])
+            if vertical_gap > gap_limit or separated(previous, line):
+                raw_blocks.append([line])
+            else:
+                raw_blocks[-1].append(line)
 
     result = []
-    for idx, block_lines in enumerate(blocks, start=1):
+    for idx, block_lines in enumerate(raw_blocks, start=1):
         x1 = min(line["x"] for line in block_lines)
         y1 = min(line["y"] for line in block_lines)
         x2 = max(line["x"] + line["w"] for line in block_lines)
         y2 = max(line["y"] + line["h"] for line in block_lines)
-        result.append(
-            {
-                "id": idx,
-                "x": x1,
-                "y": y1,
-                "w": x2 - x1,
-                "h": y2 - y1,
-                "lineIds": [line["id"] for line in block_lines],
-                "rule": "line_cluster_block",
-            }
-        )
+        result.append({
+            "id": idx, "x": x1, "y": y1, "w": x2 - x1, "h": y2 - y1,
+            "lineIds": [line["id"] for line in block_lines],
+            "rule": "bounded_by_painted_regions_or_page_edge",
+        })
     return result
 
 
@@ -403,52 +427,75 @@ def detect_markers(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
         match = pattern.match(line["text"])
         if not match:
             continue
-        markers.append(
-            {
-                "lineId": line["id"],
-                "x": line["x"],
-                "y": line["y"],
-                "w": min(line["w"], max(12, int(line["h"] * 1.6))),
-                "h": line["h"],
-                "marker": match.group(1).strip(),
-                "rule": "repeated_list_marker_regex_or_symbol",
-            }
-        )
+        markers.append({
+            "lineId": line["id"], "x": line["x"], "y": line["y"],
+            "w": min(line["w"], max(12, int(line["h"] * 1.6))), "h": line["h"],
+            "marker": match.group(1).strip(), "rule": "repeated_list_marker_regex_or_symbol",
+        })
     return markers
 
 
 def sentence_break(prev_word: str, next_word: str) -> bool:
     stripped = prev_word.strip()
-    if not stripped:
+    if not stripped or stripped[-1] not in ".!?":
         return False
-    if stripped[-1] not in ".!?":
-        return False
-
     normalized = stripped.rstrip(".!?").lower()
-    if normalized in ABBREVIATIONS:
+    if normalized in ABBREVIATIONS or re.match(r"^[A-ZА-Я]\.$", stripped):
         return False
-    if re.match(r"^[A-ZА-Я]\.$", stripped):
+    if re.match(r"^\(?([0-9]+|[A-Za-zА-Яа-я])\)?[.)]$", stripped):
         return False
-    if next_word and next_word[:1].islower():
-        return False
-    return True
+    return not next_word or not next_word[:1].islower()
 
 
-def build_sentences(words: list[WordBox], page_word_indexes: list[int]) -> list[dict[str, Any]]:
+def build_sentences(words: list[WordBox], lines: list[dict[str, Any]], blocks: list[dict[str, Any]], markers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Split text inside ordered blocks, including list-part boundaries from README.MD."""
+    marker_lines = {marker["lineId"] for marker in markers}
+    line_by_id = {line["id"]: line for line in lines}
+    ordered_lines = [line_by_id[line_id] for block in blocks for line_id in block["lineIds"] if line_id in line_by_id]
     sentences: list[dict[str, Any]] = []
     current: list[int] = []
-    current_text: list[str] = []
+    rules: list[str] = []
+    previous_line: dict[str, Any] | None = None
 
-    for local_idx, word in enumerate(words):
-        current.append(page_word_indexes[local_idx])
-        current_text.append(word.text)
-        next_word = words[local_idx + 1].text if local_idx + 1 < len(words) else ""
-        if sentence_break(word.text, next_word) or local_idx + 1 == len(words):
-            text = " ".join(current_text).strip()
-            if text:
-                sentences.append({"id": len(sentences), "wordIndexes": current, "text": text})
-            current = []
-            current_text = []
+    def flush(rule: str) -> None:
+        nonlocal current, rules
+        if current:
+            sentences.append({
+                "id": len(sentences), "wordIndexes": current,
+                "text": " ".join(words[index].text for index in current),
+                "rule": rule, "rules": sorted(set(rules + [rule])),
+                "isListPart": any(item.startswith("list_") for item in rules + [rule]),
+            })
+        current, rules = [], []
+
+    for line_position, line in enumerate(ordered_lines):
+        indexes = line.get("wordIndexes", [])
+        if not indexes:
+            continue
+        indent_changed = previous_line is not None and abs(line["x"] - previous_line["x"]) > max(8, line["h"])
+        if current and (line["id"] in marker_lines or indent_changed):
+            flush("list_marker" if line["id"] in marker_lines else "left_indent_change")
+        if line["id"] in marker_lines:
+            rules.append("list_marker")
+
+        for position, index in enumerate(indexes):
+            current.append(index)
+            next_index = indexes[position + 1] if position + 1 < len(indexes) else None
+            if next_index is None:
+                for following_line in ordered_lines[line_position + 1:]:
+                    if following_line.get("wordIndexes"):
+                        next_index = following_line["wordIndexes"][0]
+                        break
+            next_word = words[next_index].text if next_index is not None else ""
+            if sentence_break(words[index].text, next_word):
+                flush("terminal_punctuation")
+
+        if current and line["text"].rstrip().endswith((":", ";")):
+            rules.append("list_colon_or_semicolon")
+            flush("list_colon_or_semicolon")
+        previous_line = line
+
+    flush("end_of_document")
     return sentences
 
 
@@ -528,7 +575,7 @@ def process_pdf(args: argparse.Namespace) -> None:
         line_objects = detect_linear_objects(image)
         regions = detect_empty_regions(image.width, image.height, words, lines)
         painted_regions = select_painted_regions(image.width, image.height, regions)
-        blocks = detect_blocks(words, lines, image.width)
+        blocks = detect_blocks(lines, image.width, painted_regions)
         markers = detect_markers(lines)
 
         encoded_words, word_meta = encode_delta_words(words, dictionary)
@@ -545,7 +592,7 @@ def process_pdf(args: argparse.Namespace) -> None:
             item["wordIndexes"] = local_indexes
             line_payload.append(item)
 
-        sentences = build_sentences(words, list(range(len(words))))
+        sentences = build_sentences(words, line_payload, blocks, markers)
 
         pages_payload.append(
             {
